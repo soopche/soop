@@ -1,0 +1,6 @@
+{
+  "name": "Vox Arcanum: Голосовая Магия и Дуэли",
+  "description": "3D игра от первого лица с распознаванием заклинаний голосом и жестами мыши, телекинезом, трансфигурацией питомцев, крафтом посохов и PvP дуэлями.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

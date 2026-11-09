@@ -1,0 +1,155 @@
+{
+  "entities": {
+    "CharacterProfile": {
+      "title": "CharacterProfile",
+      "description": "Stores a player's wizard character progression, unlocked Labyrinth stages (1-5), unlocked Diablo-style difficulties, inventory, spells, staffs, artifacts, and pet.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique character identifier matching document ID.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the character owner.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name of the wizard character.",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "playerLevel": {
+          "type": "integer",
+          "description": "Current wizard level (1-99)."
+        },
+        "playerXp": {
+          "type": "integer",
+          "description": "Current XP toward next wizard level."
+        },
+        "gestureMasteryLevel": {
+          "type": "integer",
+          "description": "Rune drawing mastery level (1-10)."
+        },
+        "highestUnlockedStage": {
+          "type": "integer",
+          "description": "Highest unlocked Labyrinth stage on the active difficulty (1-5)."
+        },
+        "highestUnlockedDifficulty": {
+          "type": "integer",
+          "description": "Highest unlocked Diablo-style difficulty tier (1 = Normal, 2 = Nightmare)."
+        },
+        "selectedDifficulty": {
+          "type": "integer",
+          "description": "Currently selected difficulty tier (1-2)."
+        },
+        "unlockedStageD1": {
+          "type": "integer",
+          "description": "Highest unlocked Labyrinth stage on Difficulty 1 (1-5)."
+        },
+        "unlockedStageD2": {
+          "type": "integer",
+          "description": "Highest unlocked Labyrinth stage on Difficulty 2 (1-5)."
+        },
+        "equippedStaffId": {
+          "type": "string",
+          "description": "Currently equipped staff or wand ID.",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "ownedEquipment": {
+          "type": "array",
+          "description": "List of owned staff/wand IDs (bounded <= 10)."
+        },
+        "ownedArtifacts": {
+          "type": "array",
+          "description": "List of owned artifact IDs including duplicates (bounded <= 60)."
+        },
+        "equippedArtifacts": {
+          "type": "object",
+          "description": "Map of equipped artifact slots (robe, gloves, ring, boots) to artifact IDs."
+        },
+        "spellLevels": {
+          "type": "object",
+          "description": "Map of spellId to upgrade level (1-6)."
+        },
+        "reagentInventory": {
+          "type": "object",
+          "description": "Map of reagentId to quantity owned."
+        },
+        "tamedPetSpecies": {
+          "type": "string",
+          "description": "Species ID of active tamed pet or 'none'.",
+          "minLength": 1,
+          "maxLength": 24
+        },
+        "tamedPetLevel": {
+          "type": "integer",
+          "description": "Level of active tamed pet (1-5)."
+        },
+        "tamedPetTrainingStep": {
+          "type": "integer",
+          "description": "Training step of active tamed pet (0-3)."
+        },
+        "tamedPetXp": {
+          "type": "integer",
+          "description": "Combat XP of active tamed pet."
+        },
+        "claimedQuestIds": {
+          "type": "array",
+          "description": "List of claimed quest IDs (bounded <= 50)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the character was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the character was last saved."
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "name",
+        "playerLevel",
+        "playerXp",
+        "gestureMasteryLevel",
+        "highestUnlockedStage",
+        "highestUnlockedDifficulty",
+        "selectedDifficulty",
+        "unlockedStageD1",
+        "unlockedStageD2",
+        "equippedStaffId",
+        "ownedEquipment",
+        "ownedArtifacts",
+        "equippedArtifacts",
+        "spellLevels",
+        "reagentInventory",
+        "tamedPetSpecies",
+        "tamedPetLevel",
+        "tamedPetTrainingStep",
+        "tamedPetXp",
+        "claimedQuestIds",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/characters/{characterId}": {
+      "schema": {
+        "$ref": "#/entities/CharacterProfile"
+      },
+      "description": "Stores the authenticated user's wizard characters and progression."
+    }
+  }
+}

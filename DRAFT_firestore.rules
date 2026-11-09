@@ -1,0 +1,198 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 1: Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Reusable Hardened Global Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidCharId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 64 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isBoundedStringList(arr, maxLen) {
+      return arr is list &&
+        arr.size() <= maxLen &&
+        (arr.size() == 0 || (arr[0] is string && arr[0].size() >= 1 && arr[0].size() <= 64));
+    }
+
+    // Pillar 2: Validation Blueprint for CharacterProfile
+    function isValidCharacterProfile(data, userId, characterId) {
+      let allowedKeys = [
+        'id',
+        'ownerId',
+        'name',
+        'playerLevel',
+        'playerXp',
+        'gestureMasteryLevel',
+        'highestUnlockedStage',
+        'highestUnlockedDifficulty',
+        'selectedDifficulty',
+        'unlockedStageD1',
+        'unlockedStageD2',
+        'equippedStaffId',
+        'ownedEquipment',
+        'ownedArtifacts',
+        'equippedArtifacts',
+        'spellLevels',
+        'reagentInventory',
+        'tamedPetSpecies',
+        'tamedPetLevel',
+        'tamedPetTrainingStep',
+        'tamedPetXp',
+        'claimedQuestIds',
+        'createdAt',
+        'updatedAt'
+      ];
+      return data.keys().hasAll(allowedKeys) &&
+        data.keys().hasOnly(allowedKeys) &&
+        data.id is string &&
+        data.id.size() >= 1 &&
+        data.id.size() <= 64 &&
+        data.id == characterId &&
+        data.ownerId is string &&
+        data.ownerId.size() >= 1 &&
+        data.ownerId.size() <= 128 &&
+        data.ownerId == request.auth.uid &&
+        data.ownerId == userId &&
+        data.name is string &&
+        data.name.size() >= 1 &&
+        data.name.size() <= 40 &&
+        data.playerLevel is number &&
+        data.playerLevel >= 1 &&
+        data.playerLevel <= 99 &&
+        data.playerXp is number &&
+        data.playerXp >= 0 &&
+        data.playerXp <= 10000000 &&
+        data.gestureMasteryLevel is number &&
+        data.gestureMasteryLevel >= 1 &&
+        data.gestureMasteryLevel <= 10 &&
+        data.highestUnlockedStage is number &&
+        data.highestUnlockedStage >= 1 &&
+        data.highestUnlockedStage <= 5 &&
+        data.highestUnlockedDifficulty is number &&
+        data.highestUnlockedDifficulty >= 1 &&
+        data.highestUnlockedDifficulty <= 4 &&
+        data.selectedDifficulty is number &&
+        data.selectedDifficulty >= 1 &&
+        data.selectedDifficulty <= data.highestUnlockedDifficulty &&
+        data.unlockedStageD1 is number &&
+        data.unlockedStageD1 >= 1 &&
+        data.unlockedStageD1 <= 5 &&
+        data.unlockedStageD2 is number &&
+        data.unlockedStageD2 >= 1 &&
+        data.unlockedStageD2 <= 5 &&
+        data.equippedStaffId is string &&
+        data.equippedStaffId.size() >= 1 &&
+        data.equippedStaffId.size() <= 40 &&
+        isBoundedStringList(data.ownedEquipment, 10) &&
+        isBoundedStringList(data.ownedArtifacts, 60) &&
+        data.equippedArtifacts is map &&
+        data.equippedArtifacts.size() <= 6 &&
+        data.spellLevels is map &&
+        data.spellLevels.size() >= 1 &&
+        data.spellLevels.size() <= 15 &&
+        data.reagentInventory is map &&
+        data.reagentInventory.size() >= 1 &&
+        data.reagentInventory.size() <= 25 &&
+        data.tamedPetSpecies is string &&
+        data.tamedPetSpecies.size() >= 1 &&
+        data.tamedPetSpecies.size() <= 24 &&
+        data.tamedPetLevel is number &&
+        data.tamedPetLevel >= 1 &&
+        data.tamedPetLevel <= 10 &&
+        data.tamedPetTrainingStep is number &&
+        data.tamedPetTrainingStep >= 0 &&
+        data.tamedPetTrainingStep <= 5 &&
+        data.tamedPetXp is number &&
+        data.tamedPetXp >= 0 &&
+        data.tamedPetXp <= 1000000 &&
+        isBoundedStringList(data.claimedQuestIds, 50) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /users/{userId}/characters/{characterId} {
+      allow get: if isSignedIn() &&
+        isValidId(userId) &&
+        isValidCharId(characterId) &&
+        request.auth.uid == userId &&
+        (resource == null || existing().ownerId == request.auth.uid);
+
+      allow list: if isSignedIn() &&
+        isValidId(userId) &&
+        request.auth.uid == userId &&
+        existing().ownerId == request.auth.uid;
+
+      allow create: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isValidCharId(characterId) &&
+        request.auth.uid == userId &&
+        isValidCharacterProfile(incoming(), userId, characterId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isValidCharId(characterId) &&
+        request.auth.uid == userId &&
+        existing().ownerId == request.auth.uid &&
+        isValidCharacterProfile(incoming(), userId, characterId) &&
+        incoming().id == existing().id &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'name',
+          'playerLevel',
+          'playerXp',
+          'gestureMasteryLevel',
+          'highestUnlockedStage',
+          'highestUnlockedDifficulty',
+          'selectedDifficulty',
+          'unlockedStageD1',
+          'unlockedStageD2',
+          'equippedStaffId',
+          'ownedEquipment',
+          'ownedArtifacts',
+          'equippedArtifacts',
+          'spellLevels',
+          'reagentInventory',
+          'tamedPetSpecies',
+          'tamedPetLevel',
+          'tamedPetTrainingStep',
+          'tamedPetXp',
+          'claimedQuestIds',
+          'updatedAt'
+        ]);
+
+      allow delete: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isValidCharId(characterId) &&
+        request.auth.uid == userId &&
+        existing().ownerId == request.auth.uid;
+    }
+  }
+}
