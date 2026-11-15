@@ -91,6 +91,13 @@ import {
   saveCharacterToFirestore,
   deleteCharacterFromFirestore,
   subscribeToUserCharacters,
+  savePlayerProfileToFirestore,
+  loadPlayerProfileFromFirestore,
+  deletePlayerProfileFromFirestore,
+  normalizePlayerProfileKey,
+  getOrCreateGuestDeviceId,
+  connectFirestoreRoom,
+  type FirestoreRoomController,
   loadLocalCharacters,
   saveLocalCharacters,
   getActiveCharacterIdFromStorage,
@@ -131,7 +138,7 @@ export default function App() {
   const canvasMountRef = useRef<HTMLDivElement | null>(null);
   const worldRef = useRef<ArcaneWorldEngine | null>(null);
   const voiceRef = useRef<VoiceSpellRecognizer | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
+  const roomSessionRef = useRef<FirestoreRoomController | null>(null);
 
   const initialAutoStart =
     typeof window !== 'undefined' &&
@@ -223,7 +230,8 @@ export default function App() {
   const [characters, setCharacters] = useState<CharacterProfileData[]>(() => {
     const existing = loadLocalCharacters('local_guest');
     if (existing.length > 0) return existing;
-    const starter = createDefaultCharacterProfile('local_guest', 'Магистр Арканума', 'char_1');
+    const starterId = getOrCreateGuestDeviceId();
+    const starter = createDefaultCharacterProfile('local_guest', 'Магистр Арканума', starterId);
     saveLocalCharacters('local_guest', [starter]);
     return [starter];
   });
@@ -231,7 +239,7 @@ export default function App() {
     const storedId = getActiveCharacterIdFromStorage('local_guest');
     const existing = loadLocalCharacters('local_guest');
     if (storedId && existing.some((c) => c.id === storedId)) return storedId;
-    return existing[0]?.id || 'char_1';
+    return existing[0]?.id || getOrCreateGuestDeviceId();
   });
   const [selectedDifficulty, setSelectedDifficulty] = useState<DifficultyTier>(1);
   const [highestUnlockedDifficulty, setHighestUnlockedDifficulty] = useState<DifficultyTier>(1);
@@ -292,12 +300,13 @@ export default function App() {
     enemiesDefeated: number;
   } | null>(null);
 
-  // Multiplayer WebSocket State
+  // Multiplayer Cloud Firestore State
   const [selfPlayerId] = useState(() => `wiz_${Math.random().toString(36).slice(2, 8)}`);
   const [pvpRoom, setPvpRoom] = useState('arena-1');
   const [pvpPlayerName, setPvpPlayerName] = useState('Магистр Арканума');
   const [pvpConnected, setPvpConnected] = useState(false);
   const [remotePlayers, setRemotePlayers] = useState<RemotePlayerState[]>([]);
+  const shieldActiveRef = useRef(false);
 
   // In-World Gesture Drawing Overlay State (Right-Click or Shift+Left-Click)
   const gestureOverlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -318,7 +327,7 @@ export default function App() {
   const exitingPointerLockProgrammaticallyRef = useRef(false);
   const [isTracingRune, setIsTracingRune] = useState(false);
 
-  // Refs to access current React state inside 3D engine / WebSocket callbacks without re-mounting
+  // Refs to access current React state inside 3D engine / Firestore callbacks without re-mounting
   const stateRef = useRef({
     gameState,
     mapMode,
@@ -541,15 +550,35 @@ export default function App() {
     }, 60);
   }, []);
 
-  // Load initial local character on first mount
+  // Load initial local character on first mount & hydrate latest snapshot from Firestore player_profiles
   useEffect(() => {
     const owner = authUser?.uid || 'local_guest';
     const localChars = loadLocalCharacters(owner);
-    if (localChars.length > 0) {
-      const storedActiveId = getActiveCharacterIdFromStorage(owner);
-      const chosen =
-        localChars.find((c) => c.id === storedActiveId) || localChars[0];
+    const storedActiveId = getActiveCharacterIdFromStorage(owner);
+    const chosen = localChars.find((c) => c.id === storedActiveId) || localChars[0];
+    if (chosen) {
       applyCharacterProfileToState(chosen);
+      // Hydrate from Firestore player_profiles so progress never resets across reloads
+      void loadPlayerProfileFromFirestore(chosen.id)
+        .then((remote) => {
+          if (!remote) return;
+          const isNewer =
+            remote.updatedAtMs > (chosen.updatedAtMs || 0) ||
+            remote.playerXp > chosen.playerXp ||
+            remote.playerLevel > chosen.playerLevel ||
+            remote.unlockedStageD1 > chosen.unlockedStageD1;
+          if (isNewer) {
+            setCharacters((prev) => {
+              const next = prev.some((c) => c.id === remote.id)
+                ? prev.map((c) => (c.id === remote.id ? remote : c))
+                : [remote, ...prev];
+              saveLocalCharacters(owner, next);
+              return next;
+            });
+            applyCharacterProfileToState(remote);
+          }
+        })
+        .catch(() => {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -589,16 +618,25 @@ export default function App() {
               const migrated = (
                 guestChars.length > 0
                   ? guestChars
-                  : [createDefaultCharacterProfile(user.uid, user.displayName || 'Магистр Арканума', 'char_1')]
-              ).map((c) =>
-                sanitizeCharacterProfile({ ...c, ownerId: user.uid }, user.uid)
-              );
+                  : [
+                      createDefaultCharacterProfile(
+                        user.uid,
+                        user.displayName || 'Магистр Арканума',
+                        getOrCreateGuestDeviceId()
+                      ),
+                    ]
+              ).map((c) => sanitizeCharacterProfile({ ...c, ownerId: user.uid }, user.uid));
               setCharacters(migrated);
               saveLocalCharacters(user.uid, migrated);
               setActiveCharacterIdInStorage(user.uid, migrated[0].id);
               applyCharacterProfileToState(migrated[0]);
               Promise.all(
-                migrated.map((c) => saveCharacterToFirestore(user.uid, c))
+                migrated.map((c) =>
+                  Promise.all([
+                    saveCharacterToFirestore(user.uid, c),
+                    savePlayerProfileToFirestore(c),
+                  ])
+                )
               )
                 .then(() => setCloudSaveStatus('saved'))
                 .catch(() => setCloudSaveStatus('error'));
@@ -613,7 +651,13 @@ export default function App() {
         const list =
           guestChars.length > 0
             ? guestChars
-            : [createDefaultCharacterProfile('local_guest', 'Магистр Арканума', 'char_1')];
+            : [
+                createDefaultCharacterProfile(
+                  'local_guest',
+                  'Магистр Арканума',
+                  getOrCreateGuestDeviceId()
+                ),
+              ];
         setCharacters(list);
         const preferredId = getActiveCharacterIdFromStorage('local_guest');
         const target = list.find((c) => c.id === preferredId) || list[0];
@@ -711,13 +755,16 @@ export default function App() {
       return nextList;
     });
 
-    if (!authUser) return;
     setCloudSaveStatus('saving');
     const timer = window.setTimeout(() => {
-      saveCharacterToFirestore(authUser.uid, updatedSnap)
+      const writes: Promise<void>[] = [savePlayerProfileToFirestore(updatedSnap)];
+      if (authUser) {
+        writes.push(saveCharacterToFirestore(authUser.uid, updatedSnap));
+      }
+      Promise.all(writes)
         .then(() => setCloudSaveStatus('saved'))
         .catch(() => setCloudSaveStatus('error'));
-    }, 450);
+    }, 550);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
@@ -750,18 +797,17 @@ export default function App() {
       saveLocalCharacters(owner, next);
       return next;
     });
-    if (authUser) {
-      try {
-        setCloudSaveStatus('saving');
+    try {
+      setCloudSaveStatus('saving');
+      await savePlayerProfileToFirestore(snap);
+      if (authUser) {
         await saveCharacterToFirestore(authUser.uid, snap);
-        setCloudSaveStatus('saved');
-        showToast(`☁️ Персонаж «${snap.name}» сохранён в облаке аккаунта!`);
-      } catch {
-        setCloudSaveStatus('error');
-        showToast(`💾 Персонаж «${snap.name}» сохранён локально!`);
       }
-    } else {
-      showToast(`💾 Персонаж «${snap.name}» сохранён! Войдите в Google-аккаунт для облачного сохранения.`);
+      setCloudSaveStatus('saved');
+      showToast(`☁️ Профиль «${snap.name}» сохранён в облаке Firestore!`);
+    } catch {
+      setCloudSaveStatus('error');
+      showToast(`💾 Персонаж «${snap.name}» сохранён локально!`);
     }
   }, [authUser, buildCurrentCharacterSnapshot, showToast]);
 
@@ -771,25 +817,96 @@ export default function App() {
       const cleanName =
         (customName ?? newCharNameInput).trim() ||
         `Маг Арканума #${characters.length + 1}`;
-      const created = createDefaultCharacterProfile(owner, cleanName);
+      const baseKey = normalizePlayerProfileKey(cleanName);
+      const existsLocally = characters.some((c) => c.id === baseKey);
+      let targetId = existsLocally
+        ? `${baseKey}_${Math.random().toString(36).slice(2, 6)}`.slice(0, 64)
+        : baseKey;
+
+      // If this exact player name/code already exists in Firestore, load it instead of overwriting progress!
+      if (!existsLocally) {
+        try {
+          const existingRemote = await loadPlayerProfileFromFirestore(cleanName);
+          if (existingRemote) {
+            const hydrated = sanitizeCharacterProfile(
+              { ...existingRemote, ownerId: owner },
+              owner
+            );
+            const nextList = [hydrated, ...characters.filter((c) => c.id !== hydrated.id)];
+            setCharacters(nextList);
+            saveLocalCharacters(owner, nextList);
+            setActiveCharacterIdInStorage(owner, hydrated.id);
+            setNewCharNameInput('');
+            applyCharacterProfileToState(hydrated);
+            if (authUser) {
+              void saveCharacterToFirestore(authUser.uid, hydrated).catch(() => {});
+            }
+            showToast(
+              `☁️ Загружен профиль «${hydrated.name}» из Firestore (Ур. ${hydrated.playerLevel})!`
+            );
+            return;
+          }
+        } catch {
+          // Proceed with creating a new profile
+        }
+      }
+
+      const created = createDefaultCharacterProfile(owner, cleanName, targetId);
       const nextList = [created, ...characters];
       setCharacters(nextList);
       saveLocalCharacters(owner, nextList);
       setActiveCharacterIdInStorage(owner, created.id);
       setNewCharNameInput('');
       applyCharacterProfileToState(created);
-      if (authUser) {
-        try {
-          setCloudSaveStatus('saving');
+      try {
+        setCloudSaveStatus('saving');
+        await savePlayerProfileToFirestore(created);
+        if (authUser) {
           await saveCharacterToFirestore(authUser.uid, created);
-          setCloudSaveStatus('saved');
-        } catch {
-          setCloudSaveStatus('error');
         }
+        setCloudSaveStatus('saved');
+      } catch {
+        setCloudSaveStatus('error');
       }
-      showToast(`✨ Создан новый персонаж: «${created.name}» (Ур. 1)!`);
+      showToast(`✨ Создан новый персонаж: «${created.name}» (Ур. 1) и сохранён в Firestore!`);
     },
     [authUser, newCharNameInput, characters, applyCharacterProfileToState, showToast]
+  );
+
+  const handleLoadCharacterByNameOrCode = useCallback(
+    async (customNameOrCode?: string) => {
+      const owner = authUser?.uid || 'local_guest';
+      const queryInput = (customNameOrCode ?? newCharNameInput).trim();
+      if (!queryInput) {
+        showToast('Введите имя или код игрока для загрузки из Firestore.');
+        return;
+      }
+      try {
+        const found = await loadPlayerProfileFromFirestore(queryInput);
+        if (!found) {
+          showToast(`Профиль «${queryInput}» не найден в Firestore — нажмите «+ Добавить персонажа».`);
+          return;
+        }
+        const hydrated = sanitizeCharacterProfile({ ...found, ownerId: owner }, owner);
+        setCharacters((prev) => {
+          const next = [hydrated, ...prev.filter((c) => c.id !== hydrated.id)];
+          saveLocalCharacters(owner, next);
+          return next;
+        });
+        setActiveCharacterIdInStorage(owner, hydrated.id);
+        setNewCharNameInput('');
+        applyCharacterProfileToState(hydrated);
+        if (authUser) {
+          void saveCharacterToFirestore(authUser.uid, hydrated).catch(() => {});
+        }
+        showToast(
+          `☁️ Профиль «${hydrated.name}» (Ур. ${hydrated.playerLevel}) загружен из Firestore!`
+        );
+      } catch {
+        showToast('⚠️ Не удалось загрузить профиль из Firestore.');
+      }
+    },
+    [authUser, newCharNameInput, applyCharacterProfileToState, showToast]
   );
 
   const handleSwitchCharacter = useCallback(
@@ -799,6 +916,19 @@ export default function App() {
       if (!target) return;
       setActiveCharacterIdInStorage(owner, target.id);
       applyCharacterProfileToState(target);
+      void loadPlayerProfileFromFirestore(target.id)
+        .then((remote) => {
+          if (remote && remote.updatedAtMs > (target.updatedAtMs || 0)) {
+            const merged = sanitizeCharacterProfile({ ...remote, ownerId: owner }, owner);
+            setCharacters((prev) => {
+              const next = prev.map((c) => (c.id === merged.id ? merged : c));
+              saveLocalCharacters(owner, next);
+              return next;
+            });
+            applyCharacterProfileToState(merged);
+          }
+        })
+        .catch(() => {});
       showToast(
         `🧙 Выбран персонаж: «${target.name}» (Ур. ${target.playerLevel}, открыт Этап ${getUnlockedStageForDifficulty(
           target,
@@ -816,7 +946,11 @@ export default function App() {
       const remaining = characters.filter((c) => c.id !== charId);
       let nextList = remaining;
       if (nextList.length === 0) {
-        const fresh = createDefaultCharacterProfile(owner, 'Магистр Арканума');
+        const fresh = createDefaultCharacterProfile(
+          owner,
+          'Магистр Арканума',
+          getOrCreateGuestDeviceId()
+        );
         nextList = [fresh];
       }
       setCharacters(nextList);
@@ -825,14 +959,15 @@ export default function App() {
         setActiveCharacterIdInStorage(owner, nextList[0].id);
         applyCharacterProfileToState(nextList[0]);
       }
-      if (authUser) {
-        try {
+      try {
+        await deletePlayerProfileFromFirestore(charId);
+        if (authUser) {
           await deleteCharacterFromFirestore(authUser.uid, charId);
-        } catch {
-          // Ignore delete errors if offline
         }
+      } catch {
+        // Ignore delete errors if offline
       }
-      showToast(`🗑️ Персонаж «${target?.name || charId}» удалён с аккаунта!`);
+      showToast(`🗑️ Персонаж «${target?.name || charId}» удалён!`);
     },
     [authUser, characters, activeCharacterId, applyCharacterProfileToState, showToast]
   );
@@ -1070,116 +1205,81 @@ export default function App() {
         recordQuestEvents(castEvents);
       }
 
-      if (castVector && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(
-          JSON.stringify({
-            type: 'spell:cast',
-            data: {
-              castId: `${st.selfPlayerId}_${Date.now()}_${Math.random()}`,
-              casterId: st.selfPlayerId,
-              casterName: st.pvpPlayerName,
-              spellId: opts.spellId,
-              spellName: spell.name,
-              power: calc.finalDamage,
-              accuracy: calc.castQualityPercent,
-              origin: castVector.origin,
-              direction: castVector.direction,
-              color: spell.color,
-            },
-          })
-        );
+      if (castVector && roomSessionRef.current) {
+        roomSessionRef.current.sendSpellCast({
+          casterName: st.pvpPlayerName,
+          spellId: opts.spellId,
+          spellName: spell.name,
+          power: calc.finalDamage,
+          accuracy: calc.castQualityPercent,
+          origin: castVector.origin,
+          direction: castVector.direction,
+          color: spell.color,
+        });
       }
     },
     [recordQuestEvents, showToast]
   );
 
-  // Connect to Authoritative WebSocket Server for Real-Time Multiplayer Duels
-  const connectWebSocketRoom = useCallback((roomName: string, wizardName: string) => {
-    if (typeof window === 'undefined') return;
-    if (wsRef.current) {
-      wsRef.current.close();
-    }
+  // Connect to Cloud Firestore Real-Time Room for Multiplayer Co-op & PvP Duels
+  const connectMultiplayerRoom = useCallback(
+    (roomName: string, wizardName: string) => {
+      if (typeof window === 'undefined') return;
+      if (roomSessionRef.current) {
+        roomSessionRef.current.dispose();
+        roomSessionRef.current = null;
+      }
 
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${proto}//${window.location.host}/ws`;
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      setPvpConnected(true);
-      ws.send(
-        JSON.stringify({
-          type: 'room:join',
-          data: {
-            id: stateRef.current.selfPlayerId,
-            name: wizardName,
-            room: roomName,
-            maxHp: worldRef.current?.maxHp || 100,
-            level: stateRef.current.playerLevel,
-            staffId: stateRef.current.equippedStaffId,
-            labyrinthMode: stateRef.current.labyrinthMultiplayerMode,
-            stage: worldRef.current?.labyrinthStage || 1,
-          },
-        })
-      );
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(String(event.data));
-        const { type, data } = msg;
-
-        if (
-          type === 'room:init' ||
-          type === 'user:joined' ||
-          type === 'user:left' ||
-          type === 'room:sync'
-        ) {
-          const list = (data.players || []) as RemotePlayerState[];
+      const controller = connectFirestoreRoom({
+        roomName,
+        playerId: stateRef.current.selfPlayerId,
+        playerName: wizardName,
+        maxHp: worldRef.current?.maxHp || 100,
+        level: stateRef.current.playerLevel,
+        staffId: stateRef.current.equippedStaffId,
+        labyrinthMode: stateRef.current.labyrinthMultiplayerMode,
+        stage: worldRef.current?.labyrinthStage || 1,
+        onConnectedChange: (connected) => {
+          setPvpConnected(connected);
+        },
+        onPlayersSync: (list) => {
           const others = list.filter((p) => p.id !== stateRef.current.selfPlayerId);
           setRemotePlayers(others);
           worldRef.current?.syncRemotePlayers(list, stateRef.current.selfPlayerId);
-
-          if (data.labyrinthMode === 'shared' || data.labyrinthMode === 'parallel') {
-            setLabyrinthMultiplayerMode(data.labyrinthMode);
-            worldRef.current?.setLabyrinthMultiplayerMode(data.labyrinthMode);
-          }
-          if (
-            type === 'room:init' &&
-            data.labyrinthMode === 'shared' &&
-            Array.isArray(data.enemies) &&
-            data.enemies.length > 0
-          ) {
-            worldRef.current?.applyRemoteEnemySync(data.stage || 1, data.enemies);
-          }
-          if (
-            type === 'room:init' &&
-            data.labyrinthMode === 'shared' &&
-            Array.isArray(data.worldEvents) &&
-            data.worldEvents.length > 0
-          ) {
-            for (const ev of data.worldEvents) {
-              worldRef.current?.applyRemoteWorldEvent(ev);
-            }
-          }
-        } else if (type === 'room:mode_changed') {
-          const nextMode: LabyrinthMultiplayerMode =
-            data.labyrinthMode === 'parallel' ? 'parallel' : 'shared';
+        },
+        onModeChanged: (nextMode) => {
           setLabyrinthMultiplayerMode(nextMode);
           worldRef.current?.setLabyrinthMultiplayerMode(nextMode);
           showToast(`Режим комнаты: ${LABYRINTH_MULTIPLAYER_MODES[nextMode].title}`);
-        } else if (type === 'player:moved') {
-          setRemotePlayers((prev) => {
-            const exists = prev.some((p) => p.id === data.id);
-            const next = exists
-              ? prev.map((p) => (p.id === data.id ? { ...p, ...data } : p))
-              : data.id !== stateRef.current.selfPlayerId
-              ? [...prev, data as RemotePlayerState]
-              : prev;
-            worldRef.current?.syncRemotePlayers(next, stateRef.current.selfPlayerId);
-            return next;
-          });
-        } else if (type === 'spell:spawned') {
+        },
+        onGameStarted: (data) => {
+          setLabyrinthMultiplayerMode('shared');
+          worldRef.current?.setLabyrinthMultiplayerMode('shared');
+          document.body.dataset.state = 'playing';
+          setGrimoireOpen(false);
+          setAccountModalOpen(false);
+          setEndStats(null);
+          setGameState('playing');
+          worldRef.current?.resetRun('labyrinth', data.labyrinthStage);
+          showToast(
+            `🤝 Совместная игра в комнате «${data.room}» началась (Этап ${data.labyrinthStage})!`
+          );
+        },
+        onAllDeadReset: (resetStage) => {
+          document.body.dataset.state = 'playing';
+          setEndStats(null);
+          setGameState('playing');
+          worldRef.current?.resetRun('labyrinth', resetStage);
+          showToast('💀 Все маги в комнате погибли — враги этапа восстановились!');
+        },
+        onPlayerDowned: (playerId) => {
+          if (playerId !== stateRef.current.selfPlayerId) {
+            showToast(
+              `⚠️ Союзник пал в бою! Вы ещё живы — враги не восстанавливаются, пока вы держитесь!`
+            );
+          }
+        },
+        onSpellSpawned: (data) => {
           if (data.casterId !== stateRef.current.selfPlayerId && worldRef.current) {
             const origin = worldRef.current.playerPos
               .clone()
@@ -1197,7 +1297,8 @@ export default function App() {
               colorHex: data.color || '#f97316',
             });
           }
-        } else if (type === 'enemy:damaged') {
+        },
+        onEnemyDamaged: (data) => {
           if (
             data.attackerId !== stateRef.current.selfPlayerId &&
             stateRef.current.labyrinthMultiplayerMode === 'shared'
@@ -1216,7 +1317,8 @@ export default function App() {
               z: data.z,
             });
           }
-        } else if (type === 'enemy:synced') {
+        },
+        onEnemySynced: (data) => {
           if (
             data.senderId !== stateRef.current.selfPlayerId &&
             stateRef.current.labyrinthMultiplayerMode === 'shared' &&
@@ -1227,14 +1329,13 @@ export default function App() {
               data.enemies
             );
           }
-        } else if (type === 'world:event') {
-          if (
-            data.senderId !== stateRef.current.selfPlayerId &&
-            stateRef.current.labyrinthMultiplayerMode === 'shared'
-          ) {
-            worldRef.current?.applyRemoteWorldEvent(data);
+        },
+        onWorldEvent: (ev) => {
+          if (stateRef.current.labyrinthMultiplayerMode === 'shared') {
+            worldRef.current?.applyRemoteWorldEvent(ev);
           }
-        } else if (type === 'stage:advanced') {
+        },
+        onStageAdvanced: (data) => {
           if (
             data.senderId !== stateRef.current.selfPlayerId &&
             stateRef.current.labyrinthMultiplayerMode === 'shared' &&
@@ -1267,72 +1368,41 @@ export default function App() {
               }
             }
           }
-        } else if (type === 'player:damaged') {
-          const list = (data.players || []) as RemotePlayerState[];
-          setRemotePlayers(list.filter((p) => p.id !== stateRef.current.selfPlayerId));
-          worldRef.current?.syncRemotePlayers(list, stateRef.current.selfPlayerId);
-
-          if (data.targetId === stateRef.current.selfPlayerId) {
-            worldRef.current?.applyRemoteDamageToSelf(
-              data.damage,
-              Boolean(data.blockedByShield),
-              data.attackerName
-            );
+        },
+        onPlayerDamaged: (data) => {
+          if (data.targetId === stateRef.current.selfPlayerId && worldRef.current) {
+            const blocked = shieldActiveRef.current;
+            const finalDmg = blocked
+              ? Math.round(data.damage * 0.5)
+              : Math.round(data.damage);
+            worldRef.current.applyRemoteDamageToSelf(finalDmg, blocked, data.attackerName);
+            roomSessionRef.current?.sendMove({
+              x: Number(worldRef.current.playerPos.x.toFixed(2)),
+              y: 0,
+              z: Number(worldRef.current.playerPos.z.toFixed(2)),
+              rotY: Number(worldRef.current.yaw.toFixed(2)),
+              hp: Math.round(worldRef.current.hp),
+              maxHp: Math.round(worldRef.current.maxHp),
+              shieldActive: blocked,
+              name: stateRef.current.pvpPlayerName,
+              staffId: stateRef.current.equippedStaffId,
+              level: stateRef.current.playerLevel,
+            });
           }
-        } else if (type === 'room:game_started') {
-          const startStage = (
-            data.labyrinthStage === 2
-              ? 2
-              : data.labyrinthStage === 3
-              ? 3
-              : data.labyrinthStage === 4
-              ? 4
-              : data.labyrinthStage === 5
-              ? 5
-              : 1
-          ) as 1 | 2 | 3 | 4 | 5;
-          setLabyrinthMultiplayerMode('shared');
-          worldRef.current?.setLabyrinthMultiplayerMode('shared');
-          document.body.dataset.state = 'playing';
-          setGrimoireOpen(false);
-          setAccountModalOpen(false);
-          setEndStats(null);
-          setGameState('playing');
-          worldRef.current?.resetRun('labyrinth', startStage);
-          showToast(`🤝 Совместная игра в комнате «${data.room}» началась (Этап ${startStage})!`);
-        } else if (type === 'room:all_dead_reset') {
-          const resetStage = (
-            data.stage === 2
-              ? 2
-              : data.stage === 3
-              ? 3
-              : data.stage === 4
-              ? 4
-              : data.stage === 5
-              ? 5
-              : 1
-          ) as 1 | 2 | 3 | 4 | 5;
-          document.body.dataset.state = 'playing';
-          setEndStats(null);
-          setGameState('playing');
-          worldRef.current?.resetRun('labyrinth', resetStage);
-          showToast('💀 Все маги в комнате погибли — враги этапа восстановились!');
-        } else if (type === 'player:downed') {
-          if (data.playerId !== stateRef.current.selfPlayerId) {
-            showToast(
-              `⚠️ Союзник пал в бою! Вы ещё живы — враги не восстанавливаются, пока вы держитесь!`
-            );
+        },
+        onDuelReset: () => {
+          if (worldRef.current) {
+            worldRef.current.hp = worldRef.current.maxHp;
+            worldRef.current.pushHudSnapshot();
+            showToast('🔄 Раунд дуэли сброшен!');
           }
-        }
-      } catch {
-        // Ignore malformed WS messages
-      }
-    };
+        },
+      });
 
-    ws.onclose = () => {
-      setPvpConnected(false);
-    };
-  }, [showToast]);
+      roomSessionRef.current = controller;
+    },
+    [showToast]
+  );
 
   // Mount Three.js World Engine once
   useEffect(() => {
@@ -1340,6 +1410,7 @@ export default function App() {
 
     const engine = new ArcaneWorldEngine(canvasMountRef.current, {
       onHudUpdate: (snapshot) => {
+        shieldActiveRef.current = Boolean(snapshot.heldObjectName);
         setHud(snapshot);
       },
       onLootCollected: (reagentId, count, reason) => {
@@ -1444,98 +1515,37 @@ export default function App() {
         if (
           !victory &&
           stateRef.current.mapMode === 'labyrinth' &&
-          stateRef.current.labyrinthMultiplayerMode === 'shared' &&
-          wsRef.current &&
-          wsRef.current.readyState === WebSocket.OPEN
+          stateRef.current.labyrinthMultiplayerMode === 'shared'
         ) {
-          wsRef.current.send(
-            JSON.stringify({
-              type: 'player:died',
-              data: {
-                stage: engine.labyrinthStage,
-              },
-            })
-          );
+          roomSessionRef.current?.sendPlayerDied(engine.labyrinthStage);
         }
       },
       onMultiplayerMove: (pos) => {
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          wsRef.current.send(
-            JSON.stringify({
-              type: 'player:move',
-              data: {
-                ...pos,
-                name: stateRef.current.pvpPlayerName,
-                staffId: stateRef.current.equippedStaffId,
-                level: stateRef.current.playerLevel,
-              },
-            })
-          );
-        }
+        roomSessionRef.current?.sendMove({
+          ...pos,
+          name: stateRef.current.pvpPlayerName,
+          staffId: stateRef.current.equippedStaffId,
+          level: stateRef.current.playerLevel,
+        });
       },
       onMultiplayerHit: (targetId, damage) => {
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          wsRef.current.send(
-            JSON.stringify({
-              type: 'player:hit',
-              data: {
-                eventId: `p_hit_${stateRef.current.selfPlayerId}_${Date.now()}_${Math.random()}`,
-                targetId,
-                damage,
-                attackerName: stateRef.current.pvpPlayerName,
-              },
-            })
-          );
-        }
+        roomSessionRef.current?.sendPlayerHit(
+          targetId,
+          damage,
+          stateRef.current.pvpPlayerName
+        );
       },
       onMultiplayerEnemyHit: (payload) => {
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          wsRef.current.send(
-            JSON.stringify({
-              type: 'enemy:hit',
-              data: {
-                eventId: `e_hit_${stateRef.current.selfPlayerId}_${Date.now()}_${Math.random()}`,
-                ...payload,
-                attackerName: stateRef.current.pvpPlayerName,
-              },
-            })
-          );
-        }
+        roomSessionRef.current?.sendEnemyHit(payload);
       },
       onMultiplayerEnemySync: (payload) => {
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          wsRef.current.send(
-            JSON.stringify({
-              type: 'enemy:sync',
-              data: payload,
-            })
-          );
-        }
+        roomSessionRef.current?.sendEnemySync(payload);
       },
       onMultiplayerStageAdvance: (payload) => {
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          wsRef.current.send(
-            JSON.stringify({
-              type: 'stage:advance',
-              data: payload,
-            })
-          );
-        }
+        roomSessionRef.current?.sendStageAdvance(payload);
       },
       onMultiplayerWorldEvent: (payload) => {
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          wsRef.current.send(
-            JSON.stringify({
-              type: 'world:event',
-              data: {
-                eventId: `wev_${stateRef.current.selfPlayerId}_${Date.now()}_${Math.random()
-                  .toString(36)
-                  .slice(2, 6)}`,
-                ...payload,
-              },
-            })
-          );
-        }
+        roomSessionRef.current?.sendWorldEvent(payload);
       },
     });
 
@@ -1578,15 +1588,22 @@ export default function App() {
     });
     voiceRef.current = recognizer;
 
-    connectWebSocketRoom('arena-1', 'Магистр Арканума');
+    connectMultiplayerRoom('arena-1', stateRef.current.pvpPlayerName || 'Магистр Арканума');
+
+    const handleBeforeUnload = () => {
+      roomSessionRef.current?.dispose();
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
 
     return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
       recognizer.stop();
-      wsRef.current?.close();
+      roomSessionRef.current?.dispose();
+      roomSessionRef.current = null;
       engine.dispose();
     };
   }, [
-    connectWebSocketRoom,
+    connectMultiplayerRoom,
     grantXp,
     initialAutoStart,
     initialLabyrinthMpMode,
@@ -1600,17 +1617,10 @@ export default function App() {
     (nextMode: LabyrinthMultiplayerMode) => {
       setLabyrinthMultiplayerMode(nextMode);
       worldRef.current?.setLabyrinthMultiplayerMode(nextMode);
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(
-          JSON.stringify({
-            type: 'room:set_mode',
-            data: {
-              labyrinthMode: nextMode,
-              stage: worldRef.current?.labyrinthStage || 1,
-            },
-          })
-        );
-      }
+      roomSessionRef.current?.sendSetMode(
+        nextMode,
+        worldRef.current?.labyrinthStage || 1
+      );
       showToast(`Выбран режим: ${LABYRINTH_MULTIPLAYER_MODES[nextMode].title}`);
     },
     [showToast]
@@ -1628,17 +1638,7 @@ export default function App() {
       if (customLabyrinthMpMode) {
         setLabyrinthMultiplayerMode(customLabyrinthMpMode);
         worldRef.current?.setLabyrinthMultiplayerMode(customLabyrinthMpMode);
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          wsRef.current.send(
-            JSON.stringify({
-              type: 'room:set_mode',
-              data: {
-                labyrinthMode: customLabyrinthMpMode,
-                stage: initialStage,
-              },
-            })
-          );
-        }
+        roomSessionRef.current?.sendSetMode(customLabyrinthMpMode, initialStage);
       }
       setMapMode(targetMode);
       document.body.dataset.state = 'playing';
@@ -1673,9 +1673,7 @@ export default function App() {
       worldRef.current
     ) {
       worldRef.current.respawnInPlaceWithoutReset();
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: 'player:respawn', data: {} }));
-      }
+      roomSessionRef.current?.sendPlayerRespawn(worldRef.current.maxHp);
       showToast('✨ Вы возродились у костра! Общие враги и стены сохранены.');
     } else {
       worldRef.current?.resetRun(stateRef.current.mapMode);
@@ -3142,7 +3140,7 @@ export default function App() {
                     const newCode = `room-${Math.floor(100 + Math.random() * 900)}`;
                     setRoomInputCode(newCode);
                     setPvpRoom(newCode);
-                    connectWebSocketRoom(newCode, pvpPlayerName);
+                    connectMultiplayerRoom(newCode, pvpPlayerName);
                     showToast(`🏠 Создана комната «${newCode}»! Скажите код другу и запускайте игру.`);
                   }}
                   className="px-2.5 py-1.5 rounded-lg bg-[#15803d] hover:bg-[#16a34a] text-white text-xs font-bold cursor-pointer"
@@ -3155,7 +3153,7 @@ export default function App() {
                   onClick={() => {
                     const clean = roomInputCode.trim() || 'arcanum-1';
                     setPvpRoom(clean);
-                    connectWebSocketRoom(clean, pvpPlayerName);
+                    connectMultiplayerRoom(clean, pvpPlayerName);
                     showToast(`🔗 Вы вошли в комнату «${clean}» как «${pvpPlayerName}»!`);
                   }}
                   className="px-2.5 py-1.5 rounded-lg bg-[#1e293b] hover:bg-[#334155] border border-[#38bdf8] text-[#bae6fd] text-xs font-bold cursor-pointer"
@@ -3167,18 +3165,11 @@ export default function App() {
                   data-testid="title-launch-room-btn"
                   onClick={() => {
                     const clean = roomInputCode.trim() || pvpRoom || 'arcanum-1';
-                    if (clean !== pvpRoom) {
+                    if (clean !== pvpRoom || !roomSessionRef.current) {
                       setPvpRoom(clean);
-                      connectWebSocketRoom(clean, pvpPlayerName);
+                      connectMultiplayerRoom(clean, pvpPlayerName);
                     }
-                    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                      wsRef.current.send(
-                        JSON.stringify({
-                          type: 'room:start_game',
-                          data: { stage: 1 },
-                        })
-                      );
-                    }
+                    roomSessionRef.current?.sendStartGame(1);
                     handleStartGameWithMode('labyrinth', 'shared', 1);
                   }}
                   className="px-3 py-1.5 rounded-lg bg-[#22c55e] hover:bg-[#4ade80] text-[#09080d] text-xs font-extrabold cursor-pointer ml-auto"
@@ -4395,13 +4386,11 @@ export default function App() {
           onJoinPvpRoom={(room, name) => {
             setPvpRoom(room);
             setPvpPlayerName(name);
-            connectWebSocketRoom(room, name);
+            connectMultiplayerRoom(room, name);
             showToast(`Подключено к «${room}»`);
           }}
           onResetPvpDuel={() => {
-            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-              wsRef.current.send(JSON.stringify({ type: 'duel:reset', data: {} }));
-            }
+            roomSessionRef.current?.sendDuelReset();
           }}
         />
       )}
@@ -4842,7 +4831,7 @@ export default function App() {
                   type="text"
                   value={newCharNameInput}
                   onChange={(e) => setNewCharNameInput(e.target.value)}
-                  placeholder="Имя нового мага (например, Архимаг Вокс)..."
+                  placeholder="Имя или код мага (например, Архимаг Вокс)..."
                   maxLength={40}
                   data-testid="new-char-name-input"
                   className="flex-1 min-w-[200px] px-3 py-2 rounded-lg bg-[#0f0c18] border border-[#3b3154] text-xs text-white focus:outline-none focus:border-[#f59e0b]"
@@ -4854,6 +4843,14 @@ export default function App() {
                   className="px-4 py-2 rounded-lg bg-[#f59e0b] hover:bg-[#fbbf24] text-[#09080d] text-xs font-bold cursor-pointer"
                 >
                   + Добавить персонажа
+                </button>
+                <button
+                  type="button"
+                  data-testid="load-char-by-code-btn"
+                  onClick={() => handleLoadCharacterByNameOrCode()}
+                  className="px-3 py-2 rounded-lg bg-[#1e293b] hover:bg-[#334155] border border-[#38bdf8] text-[#bae6fd] text-xs font-bold cursor-pointer"
+                >
+                  ☁️ Загрузить по имени/коду
                 </button>
               </div>
 

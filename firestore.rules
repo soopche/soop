@@ -38,46 +38,8 @@ service cloud.firestore {
         (arr.size() == 0 || (arr[0] is string && arr[0].size() >= 1 && arr[0].size() <= 64));
     }
 
-    // Pillar 2: Validation Blueprint for CharacterProfile
-    function isValidCharacterProfile(data, userId, characterId) {
-      let allowedKeys = [
-        'id',
-        'ownerId',
-        'name',
-        'playerLevel',
-        'playerXp',
-        'gestureMasteryLevel',
-        'highestUnlockedStage',
-        'highestUnlockedDifficulty',
-        'selectedDifficulty',
-        'unlockedStageD1',
-        'unlockedStageD2',
-        'equippedStaffId',
-        'ownedEquipment',
-        'ownedArtifacts',
-        'equippedArtifacts',
-        'spellLevels',
-        'reagentInventory',
-        'tamedPetSpecies',
-        'tamedPetLevel',
-        'tamedPetTrainingStep',
-        'tamedPetXp',
-        'claimedQuestIds',
-        'createdAt',
-        'updatedAt'
-      ];
-      return data.keys().hasAll(allowedKeys) &&
-        data.keys().hasOnly(allowedKeys) &&
-        data.id is string &&
-        data.id.size() >= 1 &&
-        data.id.size() <= 64 &&
-        data.id == characterId &&
-        data.ownerId is string &&
-        data.ownerId.size() >= 1 &&
-        data.ownerId.size() <= 128 &&
-        data.ownerId == request.auth.uid &&
-        data.ownerId == userId &&
-        data.name is string &&
+    function isValidCharacterCommonFields(data) {
+      return data.name is string &&
         data.name.size() >= 1 &&
         data.name.size() <= 40 &&
         data.playerLevel is number &&
@@ -134,6 +96,235 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
+    // Pillar 2: Validation Blueprint for CharacterProfile (/users/{userId}/characters/{characterId})
+    function isValidCharacterProfile(data, userId, characterId) {
+      let allowedKeys = [
+        'id', 'ownerId', 'name', 'playerLevel', 'playerXp', 'gestureMasteryLevel',
+        'highestUnlockedStage', 'highestUnlockedDifficulty', 'selectedDifficulty',
+        'unlockedStageD1', 'unlockedStageD2', 'equippedStaffId', 'ownedEquipment',
+        'ownedArtifacts', 'equippedArtifacts', 'spellLevels', 'reagentInventory',
+        'tamedPetSpecies', 'tamedPetLevel', 'tamedPetTrainingStep', 'tamedPetXp',
+        'claimedQuestIds', 'createdAt', 'updatedAt'
+      ];
+      return data.keys().hasAll(allowedKeys) &&
+        data.keys().hasOnly(allowedKeys) &&
+        data.id is string &&
+        data.id.size() >= 1 &&
+        data.id.size() <= 64 &&
+        data.id == characterId &&
+        data.ownerId is string &&
+        data.ownerId.size() >= 1 &&
+        data.ownerId.size() <= 128 &&
+        data.ownerId == request.auth.uid &&
+        data.ownerId == userId &&
+        isValidCharacterCommonFields(data);
+    }
+
+    // Validation Blueprint for PlayerProfile (/player_profiles/{profileId})
+    function isValidPlayerProfile(data, profileId) {
+      let allowedKeys = [
+        'id', 'profileKey', 'ownerId', 'name', 'playerLevel', 'playerXp', 'gestureMasteryLevel',
+        'highestUnlockedStage', 'highestUnlockedDifficulty', 'selectedDifficulty',
+        'unlockedStageD1', 'unlockedStageD2', 'equippedStaffId', 'ownedEquipment',
+        'ownedArtifacts', 'equippedArtifacts', 'spellLevels', 'reagentInventory',
+        'tamedPetSpecies', 'tamedPetLevel', 'tamedPetTrainingStep', 'tamedPetXp',
+        'claimedQuestIds', 'createdAt', 'updatedAt'
+      ];
+      return data.keys().hasAll(allowedKeys) &&
+        data.keys().hasOnly(allowedKeys) &&
+        data.id is string &&
+        data.id.size() >= 1 &&
+        data.id.size() <= 64 &&
+        data.id == profileId &&
+        data.profileKey is string &&
+        data.profileKey.size() >= 1 &&
+        data.profileKey.size() <= 64 &&
+        data.profileKey == profileId &&
+        data.ownerId is string &&
+        data.ownerId.size() >= 1 &&
+        data.ownerId.size() <= 128 &&
+        isValidCharacterCommonFields(data);
+    }
+
+    // Validation Blueprint for GameRoom (/rooms/{roomId})
+    function isValidGameRoom(data, roomId) {
+      let allowedKeys = [
+        'roomId', 'labyrinthMode', 'labyrinthStage', 'stageEpoch',
+        'gameStartNonce', 'gameStartStage', 'gameStartHostId',
+        'allDeadResetNonce', 'allDeadResetStage',
+        'stageAdvanceNonce', 'stageAdvanceStage', 'stageAdvanceVictory', 'stageAdvanceReset', 'stageAdvanceBy',
+        'duelResetNonce', 'createdAt', 'updatedAt'
+      ];
+      return data.keys().hasAll(allowedKeys) &&
+        data.keys().hasOnly(allowedKeys) &&
+        data.roomId is string &&
+        data.roomId.size() >= 1 &&
+        data.roomId.size() <= 64 &&
+        data.roomId == roomId &&
+        data.labyrinthMode is string &&
+        data.labyrinthMode in ['shared', 'parallel'] &&
+        data.labyrinthStage is number &&
+        data.labyrinthStage >= 0 &&
+        data.labyrinthStage <= 5 &&
+        data.stageEpoch is number &&
+        data.stageEpoch >= 1 &&
+        data.stageEpoch <= 100000000 &&
+        data.gameStartNonce is number &&
+        data.gameStartNonce >= 0 &&
+        data.gameStartNonce <= 10000000000000 &&
+        data.gameStartStage is number &&
+        data.gameStartStage >= 0 &&
+        data.gameStartStage <= 5 &&
+        data.gameStartHostId is string &&
+        data.gameStartHostId.size() <= 64 &&
+        data.allDeadResetNonce is number &&
+        data.allDeadResetNonce >= 0 &&
+        data.allDeadResetNonce <= 10000000000000 &&
+        data.allDeadResetStage is number &&
+        data.allDeadResetStage >= 0 &&
+        data.allDeadResetStage <= 5 &&
+        data.stageAdvanceNonce is number &&
+        data.stageAdvanceNonce >= 0 &&
+        data.stageAdvanceNonce <= 10000000000000 &&
+        data.stageAdvanceStage is number &&
+        data.stageAdvanceStage >= 0 &&
+        data.stageAdvanceStage <= 5 &&
+        data.stageAdvanceVictory is bool &&
+        data.stageAdvanceReset is bool &&
+        data.stageAdvanceBy is string &&
+        data.stageAdvanceBy.size() <= 64 &&
+        data.duelResetNonce is number &&
+        data.duelResetNonce >= 0 &&
+        data.duelResetNonce <= 10000000000000 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // Validation Blueprint for RoomPlayer (/rooms/{roomId}/players/{playerId})
+    function isValidRoomPlayer(data, roomId, playerId) {
+      let allowedKeys = [
+        'id', 'roomId', 'name', 'x', 'y', 'z', 'rotY', 'hp', 'maxHp',
+        'level', 'staffId', 'shieldActive', 'wins', 'isDead', 'lastSeenMs', 'updatedAt'
+      ];
+      return data.keys().hasAll(allowedKeys) &&
+        data.keys().hasOnly(allowedKeys) &&
+        data.id is string &&
+        data.id.size() >= 1 &&
+        data.id.size() <= 64 &&
+        data.id == playerId &&
+        data.roomId is string &&
+        data.roomId.size() >= 1 &&
+        data.roomId.size() <= 64 &&
+        data.roomId == roomId &&
+        data.name is string &&
+        data.name.size() >= 1 &&
+        data.name.size() <= 40 &&
+        data.x is number && data.x >= -2000 && data.x <= 2000 &&
+        data.y is number && data.y >= -500 && data.y <= 500 &&
+        data.z is number && data.z >= -2000 && data.z <= 2000 &&
+        data.rotY is number && data.rotY >= -100 && data.rotY <= 100 &&
+        data.hp is number && data.hp >= 0 && data.hp <= 50000 &&
+        data.maxHp is number && data.maxHp >= 1 && data.maxHp <= 50000 &&
+        data.level is number && data.level >= 1 && data.level <= 99 &&
+        data.staffId is string && data.staffId.size() >= 1 && data.staffId.size() <= 40 &&
+        data.shieldActive is bool &&
+        data.wins is number && data.wins >= 0 && data.wins <= 100000 &&
+        data.isDead is bool &&
+        data.lastSeenMs is number && data.lastSeenMs >= 0 && data.lastSeenMs <= 9999999999999 &&
+        data.updatedAt is timestamp;
+    }
+
+    // Validation Blueprint for RoomEnemy (/rooms/{roomId}/enemies/{enemyId})
+    function isValidRoomEnemy(data, roomId, enemyId) {
+      let allowedKeys = [
+        'id', 'roomId', 'stage', 'stageEpoch', 'hp', 'maxHp', 'x', 'y', 'z', 'state',
+        'killed', 'lastHitId', 'lastAttackerId', 'lastDamage', 'lastSpellId',
+        'lastStunSec', 'lastFreezeSec', 'senderId', 'updatedAt'
+      ];
+      return data.keys().hasAll(allowedKeys) &&
+        data.keys().hasOnly(allowedKeys) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 64 && data.id == enemyId &&
+        data.roomId is string && data.roomId.size() >= 1 && data.roomId.size() <= 64 && data.roomId == roomId &&
+        data.stage is number && data.stage >= 0 && data.stage <= 5 &&
+        data.stageEpoch is number && data.stageEpoch >= 1 && data.stageEpoch <= 100000000 &&
+        data.hp is number && data.hp >= 0 && data.hp <= 500000 &&
+        data.maxHp is number && data.maxHp >= 1 && data.maxHp <= 500000 &&
+        data.x is number && data.x >= -2000 && data.x <= 2000 &&
+        data.y is number && data.y >= -500 && data.y <= 500 &&
+        data.z is number && data.z >= -2000 && data.z <= 2000 &&
+        data.state is string && data.state.size() >= 1 && data.state.size() <= 24 &&
+        data.killed is bool &&
+        data.lastHitId is string && data.lastHitId.size() <= 64 &&
+        data.lastAttackerId is string && data.lastAttackerId.size() <= 64 &&
+        data.lastDamage is number && data.lastDamage >= 0 && data.lastDamage <= 50000 &&
+        data.lastSpellId is string && data.lastSpellId.size() <= 32 &&
+        data.lastStunSec is number && data.lastStunSec >= 0 && data.lastStunSec <= 60 &&
+        data.lastFreezeSec is number && data.lastFreezeSec >= 0 && data.lastFreezeSec <= 60 &&
+        data.senderId is string && data.senderId.size() >= 1 && data.senderId.size() <= 64 &&
+        data.updatedAt is timestamp;
+    }
+
+    // Validation Blueprint for RoomEvent (/rooms/{roomId}/events/{eventId})
+    function isValidRoomEvent(data, roomId, eventId) {
+      let allowedKeys = [
+        'id', 'roomId', 'kind', 'senderId', 'senderName', 'spellId', 'spellName',
+        'power', 'accuracy', 'originX', 'originY', 'originZ', 'dirX', 'dirY', 'dirZ',
+        'color', 'targetId', 'damage', 'createdAtMs', 'createdAt'
+      ];
+      return data.keys().hasAll(allowedKeys) &&
+        data.keys().hasOnly(allowedKeys) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 64 && data.id == eventId &&
+        data.roomId is string && data.roomId.size() >= 1 && data.roomId.size() <= 64 && data.roomId == roomId &&
+        data.kind is string && data.kind in ['spell_cast', 'player_hit'] &&
+        data.senderId is string && data.senderId.size() >= 1 && data.senderId.size() <= 64 &&
+        data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 40 &&
+        data.spellId is string && data.spellId.size() <= 32 &&
+        data.spellName is string && data.spellName.size() <= 48 &&
+        data.power is number && data.power >= 0 && data.power <= 50000 &&
+        data.accuracy is number && data.accuracy >= 0 && data.accuracy <= 100 &&
+        data.originX is number && data.originX >= -2000 && data.originX <= 2000 &&
+        data.originY is number && data.originY >= -500 && data.originY <= 500 &&
+        data.originZ is number && data.originZ >= -2000 && data.originZ <= 2000 &&
+        data.dirX is number && data.dirX >= -10 && data.dirX <= 10 &&
+        data.dirY is number && data.dirY >= -10 && data.dirY <= 10 &&
+        data.dirZ is number && data.dirZ >= -10 && data.dirZ <= 10 &&
+        data.color is string && data.color.size() <= 24 &&
+        data.targetId is string && data.targetId.size() <= 64 &&
+        data.damage is number && data.damage >= 0 && data.damage <= 50000 &&
+        data.createdAtMs is number && data.createdAtMs >= 0 && data.createdAtMs <= 9999999999999 &&
+        data.createdAt is timestamp;
+    }
+
+    // Validation Blueprint for RoomWorldEvent (/rooms/{roomId}/world_events/{eventKey})
+    function isValidRoomWorldEvent(data, roomId, eventKey) {
+      let allowedKeys = [
+        'eventKey', 'roomId', 'eventId', 'senderId', 'stage', 'stageEpoch',
+        'kind', 'targetId', 'x', 'y', 'z', 'rotY', 'vx', 'vy', 'vz',
+        'isHeld', 'isThrown', 'throwDamage', 'updatedAt'
+      ];
+      return data.keys().hasAll(allowedKeys) &&
+        data.keys().hasOnly(allowedKeys) &&
+        data.eventKey is string && data.eventKey.size() >= 1 && data.eventKey.size() <= 64 && data.eventKey == eventKey &&
+        data.roomId is string && data.roomId.size() >= 1 && data.roomId.size() <= 64 && data.roomId == roomId &&
+        data.eventId is string && data.eventId.size() >= 1 && data.eventId.size() <= 64 &&
+        data.senderId is string && data.senderId.size() >= 1 && data.senderId.size() <= 64 &&
+        data.stage is number && data.stage >= 0 && data.stage <= 5 &&
+        data.stageEpoch is number && data.stageEpoch >= 1 && data.stageEpoch <= 100000000 &&
+        data.kind is string && data.kind.size() >= 1 && data.kind.size() <= 32 &&
+        data.targetId is string && data.targetId.size() >= 1 && data.targetId.size() <= 64 &&
+        data.x is number && data.x >= -2000 && data.x <= 2000 &&
+        data.y is number && data.y >= -500 && data.y <= 500 &&
+        data.z is number && data.z >= -2000 && data.z <= 2000 &&
+        data.rotY is number && data.rotY >= -100 && data.rotY <= 100 &&
+        data.vx is number && data.vx >= -500 && data.vx <= 500 &&
+        data.vy is number && data.vy >= -500 && data.vy <= 500 &&
+        data.vz is number && data.vz >= -500 && data.vz <= 500 &&
+        data.isHeld is bool &&
+        data.isThrown is bool &&
+        data.throwDamage is number && data.throwDamage >= 0 && data.throwDamage <= 50000 &&
+        data.updatedAt is timestamp;
+    }
+
     match /users/{userId}/characters/{characterId} {
       allow get: if isSignedIn() &&
         isValidId(userId) &&
@@ -165,27 +356,12 @@ service cloud.firestore {
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time &&
         incoming().diff(existing()).affectedKeys().hasOnly([
-          'name',
-          'playerLevel',
-          'playerXp',
-          'gestureMasteryLevel',
-          'highestUnlockedStage',
-          'highestUnlockedDifficulty',
-          'selectedDifficulty',
-          'unlockedStageD1',
-          'unlockedStageD2',
-          'equippedStaffId',
-          'ownedEquipment',
-          'ownedArtifacts',
-          'equippedArtifacts',
-          'spellLevels',
-          'reagentInventory',
-          'tamedPetSpecies',
-          'tamedPetLevel',
-          'tamedPetTrainingStep',
-          'tamedPetXp',
-          'claimedQuestIds',
-          'updatedAt'
+          'name', 'playerLevel', 'playerXp', 'gestureMasteryLevel',
+          'highestUnlockedStage', 'highestUnlockedDifficulty', 'selectedDifficulty',
+          'unlockedStageD1', 'unlockedStageD2', 'equippedStaffId', 'ownedEquipment',
+          'ownedArtifacts', 'equippedArtifacts', 'spellLevels', 'reagentInventory',
+          'tamedPetSpecies', 'tamedPetLevel', 'tamedPetTrainingStep', 'tamedPetXp',
+          'claimedQuestIds', 'updatedAt'
         ]);
 
       allow delete: if isVerifiedUser() &&
@@ -193,6 +369,154 @@ service cloud.firestore {
         isValidCharId(characterId) &&
         request.auth.uid == userId &&
         existing().ownerId == request.auth.uid;
+    }
+
+    // Player Profiles keyed by deterministic name/code for reload-safe persistence
+    match /player_profiles/{profileId} {
+      allow get: if isValidCharId(profileId);
+      allow list: if false;
+
+      allow create: if isValidCharId(profileId) &&
+        isValidPlayerProfile(incoming(), profileId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isValidCharId(profileId) &&
+        isValidPlayerProfile(incoming(), profileId) &&
+        incoming().id == existing().id &&
+        incoming().profileKey == existing().profileKey &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'ownerId', 'name', 'playerLevel', 'playerXp', 'gestureMasteryLevel',
+          'highestUnlockedStage', 'highestUnlockedDifficulty', 'selectedDifficulty',
+          'unlockedStageD1', 'unlockedStageD2', 'equippedStaffId', 'ownedEquipment',
+          'ownedArtifacts', 'equippedArtifacts', 'spellLevels', 'reagentInventory',
+          'tamedPetSpecies', 'tamedPetLevel', 'tamedPetTrainingStep', 'tamedPetXp',
+          'claimedQuestIds', 'updatedAt'
+        ]);
+
+      allow delete: if isValidCharId(profileId) &&
+        existing().profileKey == profileId;
+    }
+
+    // Real-Time Co-op & PvP Rooms
+    match /rooms/{roomId} {
+      allow get: if isValidCharId(roomId);
+      allow list: if false;
+
+      allow create: if isValidCharId(roomId) &&
+        isValidGameRoom(incoming(), roomId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isValidCharId(roomId) &&
+        isValidGameRoom(incoming(), roomId) &&
+        incoming().roomId == existing().roomId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'labyrinthMode', 'labyrinthStage', 'stageEpoch',
+          'gameStartNonce', 'gameStartStage', 'gameStartHostId',
+          'allDeadResetNonce', 'allDeadResetStage',
+          'stageAdvanceNonce', 'stageAdvanceStage', 'stageAdvanceVictory', 'stageAdvanceReset', 'stageAdvanceBy',
+          'duelResetNonce', 'updatedAt'
+        ]);
+
+      allow delete: if false;
+
+      match /players/{playerId} {
+        allow get: if isValidCharId(roomId) && isValidCharId(playerId);
+        allow list: if isValidCharId(roomId) && existing().roomId == roomId;
+
+        allow create: if isValidCharId(roomId) &&
+          isValidCharId(playerId) &&
+          isValidRoomPlayer(incoming(), roomId, playerId) &&
+          incoming().updatedAt == request.time;
+
+        allow update: if isValidCharId(roomId) &&
+          isValidCharId(playerId) &&
+          isValidRoomPlayer(incoming(), roomId, playerId) &&
+          incoming().id == existing().id &&
+          incoming().roomId == existing().roomId &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'x', 'y', 'z', 'rotY', 'hp', 'maxHp',
+            'level', 'staffId', 'shieldActive', 'wins', 'isDead', 'lastSeenMs', 'updatedAt'
+          ]);
+
+        allow delete: if isValidCharId(roomId) &&
+          isValidCharId(playerId) &&
+          existing().roomId == roomId;
+      }
+
+      match /enemies/{enemyId} {
+        allow get: if isValidCharId(roomId) && isValidCharId(enemyId);
+        allow list: if isValidCharId(roomId) && existing().roomId == roomId;
+
+        allow create: if isValidCharId(roomId) &&
+          isValidCharId(enemyId) &&
+          isValidRoomEnemy(incoming(), roomId, enemyId) &&
+          incoming().updatedAt == request.time;
+
+        allow update: if isValidCharId(roomId) &&
+          isValidCharId(enemyId) &&
+          isValidRoomEnemy(incoming(), roomId, enemyId) &&
+          incoming().id == existing().id &&
+          incoming().roomId == existing().roomId &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'stage', 'stageEpoch', 'hp', 'maxHp', 'x', 'y', 'z', 'state',
+            'killed', 'lastHitId', 'lastAttackerId', 'lastDamage', 'lastSpellId',
+            'lastStunSec', 'lastFreezeSec', 'senderId', 'updatedAt'
+          ]);
+
+        allow delete: if isValidCharId(roomId) &&
+          isValidCharId(enemyId) &&
+          existing().roomId == roomId;
+      }
+
+      match /events/{eventId} {
+        allow get: if isValidCharId(roomId) && isValidCharId(eventId);
+        allow list: if isValidCharId(roomId) && existing().roomId == roomId;
+
+        allow create: if isValidCharId(roomId) &&
+          isValidCharId(eventId) &&
+          isValidRoomEvent(incoming(), roomId, eventId) &&
+          incoming().createdAt == request.time;
+
+        allow update: if false;
+
+        allow delete: if isValidCharId(roomId) &&
+          isValidCharId(eventId) &&
+          existing().roomId == roomId;
+      }
+
+      match /world_events/{eventKey} {
+        allow get: if isValidCharId(roomId) && isValidCharId(eventKey);
+        allow list: if isValidCharId(roomId) && existing().roomId == roomId;
+
+        allow create: if isValidCharId(roomId) &&
+          isValidCharId(eventKey) &&
+          isValidRoomWorldEvent(incoming(), roomId, eventKey) &&
+          incoming().updatedAt == request.time;
+
+        allow update: if isValidCharId(roomId) &&
+          isValidCharId(eventKey) &&
+          isValidRoomWorldEvent(incoming(), roomId, eventKey) &&
+          incoming().eventKey == existing().eventKey &&
+          incoming().roomId == existing().roomId &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'eventId', 'senderId', 'stage', 'stageEpoch',
+            'kind', 'targetId', 'x', 'y', 'z', 'rotY', 'vx', 'vy', 'vz',
+            'isHeld', 'isThrown', 'throwDamage', 'updatedAt'
+          ]);
+
+        allow delete: if isValidCharId(roomId) &&
+          isValidCharId(eventKey) &&
+          existing().roomId == roomId;
+      }
     }
   }
 }

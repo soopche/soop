@@ -2,154 +2,264 @@
   "entities": {
     "CharacterProfile": {
       "title": "CharacterProfile",
-      "description": "Stores a player's wizard character progression, unlocked Labyrinth stages (1-5), unlocked Diablo-style difficulties, inventory, spells, staffs, artifacts, and pet.",
+      "description": "Stores an authenticated user's wizard character progression, unlocked Labyrinth stages (1-5), unlocked Diablo-style difficulties, inventory, spells, staffs, artifacts, and pet.",
       "type": "object",
       "properties": {
-        "id": {
-          "type": "string",
-          "description": "Unique character identifier matching document ID.",
-          "minLength": 1,
-          "maxLength": 64,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "ownerId": {
-          "type": "string",
-          "description": "Firebase Auth UID of the character owner.",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "name": {
-          "type": "string",
-          "description": "Display name of the wizard character.",
-          "minLength": 1,
-          "maxLength": 40
-        },
-        "playerLevel": {
-          "type": "integer",
-          "description": "Current wizard level (1-99)."
-        },
-        "playerXp": {
-          "type": "integer",
-          "description": "Current XP toward next wizard level."
-        },
-        "gestureMasteryLevel": {
-          "type": "integer",
-          "description": "Rune drawing mastery level (1-10)."
-        },
-        "highestUnlockedStage": {
-          "type": "integer",
-          "description": "Highest unlocked Labyrinth stage on the active difficulty (1-5)."
-        },
-        "highestUnlockedDifficulty": {
-          "type": "integer",
-          "description": "Highest unlocked Diablo-style difficulty tier (1 = Normal, 2 = Nightmare)."
-        },
-        "selectedDifficulty": {
-          "type": "integer",
-          "description": "Currently selected difficulty tier (1-2)."
-        },
-        "unlockedStageD1": {
-          "type": "integer",
-          "description": "Highest unlocked Labyrinth stage on Difficulty 1 (1-5)."
-        },
-        "unlockedStageD2": {
-          "type": "integer",
-          "description": "Highest unlocked Labyrinth stage on Difficulty 2 (1-5)."
-        },
-        "equippedStaffId": {
-          "type": "string",
-          "description": "Currently equipped staff or wand ID.",
-          "minLength": 1,
-          "maxLength": 40
-        },
-        "ownedEquipment": {
-          "type": "array",
-          "description": "List of owned staff/wand IDs (bounded <= 10)."
-        },
-        "ownedArtifacts": {
-          "type": "array",
-          "description": "List of owned artifact IDs including duplicates (bounded <= 60)."
-        },
-        "equippedArtifacts": {
-          "type": "object",
-          "description": "Map of equipped artifact slots (robe, gloves, ring, boots) to artifact IDs."
-        },
-        "spellLevels": {
-          "type": "object",
-          "description": "Map of spellId to upgrade level (1-6)."
-        },
-        "reagentInventory": {
-          "type": "object",
-          "description": "Map of reagentId to quantity owned."
-        },
-        "tamedPetSpecies": {
-          "type": "string",
-          "description": "Species ID of active tamed pet or 'none'.",
-          "minLength": 1,
-          "maxLength": 24
-        },
-        "tamedPetLevel": {
-          "type": "integer",
-          "description": "Level of active tamed pet (1-5)."
-        },
-        "tamedPetTrainingStep": {
-          "type": "integer",
-          "description": "Training step of active tamed pet (0-3)."
-        },
-        "tamedPetXp": {
-          "type": "integer",
-          "description": "Combat XP of active tamed pet."
-        },
-        "claimedQuestIds": {
-          "type": "array",
-          "description": "List of claimed quest IDs (bounded <= 50)."
-        },
-        "createdAt": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Server timestamp when the character was created."
-        },
-        "updatedAt": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Server timestamp when the character was last saved."
-        }
+        "id": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "playerLevel": { "type": "integer" },
+        "playerXp": { "type": "integer" },
+        "gestureMasteryLevel": { "type": "integer" },
+        "highestUnlockedStage": { "type": "integer" },
+        "highestUnlockedDifficulty": { "type": "integer" },
+        "selectedDifficulty": { "type": "integer" },
+        "unlockedStageD1": { "type": "integer" },
+        "unlockedStageD2": { "type": "integer" },
+        "equippedStaffId": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "ownedEquipment": { "type": "array" },
+        "ownedArtifacts": { "type": "array" },
+        "equippedArtifacts": { "type": "object" },
+        "spellLevels": { "type": "object" },
+        "reagentInventory": { "type": "object" },
+        "tamedPetSpecies": { "type": "string", "minLength": 1, "maxLength": 24 },
+        "tamedPetLevel": { "type": "integer" },
+        "tamedPetTrainingStep": { "type": "integer" },
+        "tamedPetXp": { "type": "integer" },
+        "claimedQuestIds": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": [
-        "id",
-        "ownerId",
-        "name",
-        "playerLevel",
-        "playerXp",
-        "gestureMasteryLevel",
-        "highestUnlockedStage",
-        "highestUnlockedDifficulty",
-        "selectedDifficulty",
-        "unlockedStageD1",
-        "unlockedStageD2",
-        "equippedStaffId",
-        "ownedEquipment",
-        "ownedArtifacts",
-        "equippedArtifacts",
-        "spellLevels",
-        "reagentInventory",
-        "tamedPetSpecies",
-        "tamedPetLevel",
-        "tamedPetTrainingStep",
-        "tamedPetXp",
-        "claimedQuestIds",
-        "createdAt",
-        "updatedAt"
+        "id", "ownerId", "name", "playerLevel", "playerXp", "gestureMasteryLevel",
+        "highestUnlockedStage", "highestUnlockedDifficulty", "selectedDifficulty",
+        "unlockedStageD1", "unlockedStageD2", "equippedStaffId", "ownedEquipment",
+        "ownedArtifacts", "equippedArtifacts", "spellLevels", "reagentInventory",
+        "tamedPetSpecies", "tamedPetLevel", "tamedPetTrainingStep", "tamedPetXp",
+        "claimedQuestIds", "createdAt", "updatedAt"
+      ]
+    },
+    "PlayerProfile": {
+      "title": "PlayerProfile",
+      "description": "Stores a wizard character profile keyed by deterministic player name/code so progress persists across page reloads in Firestore.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "profileKey": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "playerLevel": { "type": "integer" },
+        "playerXp": { "type": "integer" },
+        "gestureMasteryLevel": { "type": "integer" },
+        "highestUnlockedStage": { "type": "integer" },
+        "highestUnlockedDifficulty": { "type": "integer" },
+        "selectedDifficulty": { "type": "integer" },
+        "unlockedStageD1": { "type": "integer" },
+        "unlockedStageD2": { "type": "integer" },
+        "equippedStaffId": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "ownedEquipment": { "type": "array" },
+        "ownedArtifacts": { "type": "array" },
+        "equippedArtifacts": { "type": "object" },
+        "spellLevels": { "type": "object" },
+        "reagentInventory": { "type": "object" },
+        "tamedPetSpecies": { "type": "string", "minLength": 1, "maxLength": 24 },
+        "tamedPetLevel": { "type": "integer" },
+        "tamedPetTrainingStep": { "type": "integer" },
+        "tamedPetXp": { "type": "integer" },
+        "claimedQuestIds": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "profileKey", "ownerId", "name", "playerLevel", "playerXp", "gestureMasteryLevel",
+        "highestUnlockedStage", "highestUnlockedDifficulty", "selectedDifficulty",
+        "unlockedStageD1", "unlockedStageD2", "equippedStaffId", "ownedEquipment",
+        "ownedArtifacts", "equippedArtifacts", "spellLevels", "reagentInventory",
+        "tamedPetSpecies", "tamedPetLevel", "tamedPetTrainingStep", "tamedPetXp",
+        "claimedQuestIds", "createdAt", "updatedAt"
+      ]
+    },
+    "GameRoom": {
+      "title": "GameRoom",
+      "description": "Multiplayer co-op and PvP duel room metadata and stage synchronization state.",
+      "type": "object",
+      "properties": {
+        "roomId": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "labyrinthMode": { "type": "string", "enum": ["shared", "parallel"] },
+        "labyrinthStage": { "type": "integer" },
+        "stageEpoch": { "type": "integer" },
+        "gameStartNonce": { "type": "integer" },
+        "gameStartStage": { "type": "integer" },
+        "gameStartHostId": { "type": "string", "maxLength": 64 },
+        "allDeadResetNonce": { "type": "integer" },
+        "allDeadResetStage": { "type": "integer" },
+        "stageAdvanceNonce": { "type": "integer" },
+        "stageAdvanceStage": { "type": "integer" },
+        "stageAdvanceVictory": { "type": "boolean" },
+        "stageAdvanceReset": { "type": "boolean" },
+        "stageAdvanceBy": { "type": "string", "maxLength": 64 },
+        "duelResetNonce": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "roomId", "labyrinthMode", "labyrinthStage", "stageEpoch",
+        "gameStartNonce", "gameStartStage", "gameStartHostId",
+        "allDeadResetNonce", "allDeadResetStage",
+        "stageAdvanceNonce", "stageAdvanceStage", "stageAdvanceVictory", "stageAdvanceReset", "stageAdvanceBy",
+        "duelResetNonce", "createdAt", "updatedAt"
+      ]
+    },
+    "RoomPlayer": {
+      "title": "RoomPlayer",
+      "description": "Real-time player transform, HP, shield, and status inside a room.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "roomId": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "z": { "type": "number" },
+        "rotY": { "type": "number" },
+        "hp": { "type": "integer" },
+        "maxHp": { "type": "integer" },
+        "level": { "type": "integer" },
+        "staffId": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "shieldActive": { "type": "boolean" },
+        "wins": { "type": "integer" },
+        "isDead": { "type": "boolean" },
+        "lastSeenMs": { "type": "integer" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "roomId", "name", "x", "y", "z", "rotY", "hp", "maxHp",
+        "level", "staffId", "shieldActive", "wins", "isDead", "lastSeenMs", "updatedAt"
+      ]
+    },
+    "RoomEnemy": {
+      "title": "RoomEnemy",
+      "description": "Shared Labyrinth enemy HP, position, and hit metadata inside a room.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "roomId": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "stage": { "type": "integer" },
+        "stageEpoch": { "type": "integer" },
+        "hp": { "type": "integer" },
+        "maxHp": { "type": "integer" },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "z": { "type": "number" },
+        "state": { "type": "string", "minLength": 1, "maxLength": 24 },
+        "killed": { "type": "boolean" },
+        "lastHitId": { "type": "string", "maxLength": 64 },
+        "lastAttackerId": { "type": "string", "maxLength": 64 },
+        "lastDamage": { "type": "integer" },
+        "lastSpellId": { "type": "string", "maxLength": 32 },
+        "lastStunSec": { "type": "number" },
+        "lastFreezeSec": { "type": "number" },
+        "senderId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "roomId", "stage", "stageEpoch", "hp", "maxHp", "x", "y", "z", "state",
+        "killed", "lastHitId", "lastAttackerId", "lastDamage", "lastSpellId",
+        "lastStunSec", "lastFreezeSec", "senderId", "updatedAt"
+      ]
+    },
+    "RoomEvent": {
+      "title": "RoomEvent",
+      "description": "Ephemeral spell cast and PvP player hit events in a room.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "roomId": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "kind": { "type": "string", "enum": ["spell_cast", "player_hit"] },
+        "senderId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "senderName": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "spellId": { "type": "string", "maxLength": 32 },
+        "spellName": { "type": "string", "maxLength": 48 },
+        "power": { "type": "number" },
+        "accuracy": { "type": "number" },
+        "originX": { "type": "number" },
+        "originY": { "type": "number" },
+        "originZ": { "type": "number" },
+        "dirX": { "type": "number" },
+        "dirY": { "type": "number" },
+        "dirZ": { "type": "number" },
+        "color": { "type": "string", "maxLength": 24 },
+        "targetId": { "type": "string", "maxLength": 64 },
+        "damage": { "type": "number" },
+        "createdAtMs": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "roomId", "kind", "senderId", "senderName", "spellId", "spellName",
+        "power", "accuracy", "originX", "originY", "originZ", "dirX", "dirY", "dirZ",
+        "color", "targetId", "damage", "createdAtMs", "createdAt"
+      ]
+    },
+    "RoomWorldEvent": {
+      "title": "RoomWorldEvent",
+      "description": "Shared world interaction state (harvests, traps, barrels, props, campfires, walls, rune buttons, chests).",
+      "type": "object",
+      "properties": {
+        "eventKey": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "roomId": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "eventId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "senderId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "stage": { "type": "integer" },
+        "stageEpoch": { "type": "integer" },
+        "kind": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "targetId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "z": { "type": "number" },
+        "rotY": { "type": "number" },
+        "vx": { "type": "number" },
+        "vy": { "type": "number" },
+        "vz": { "type": "number" },
+        "isHeld": { "type": "boolean" },
+        "isThrown": { "type": "boolean" },
+        "throwDamage": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "eventKey", "roomId", "eventId", "senderId", "stage", "stageEpoch",
+        "kind", "targetId", "x", "y", "z", "rotY", "vx", "vy", "vz",
+        "isHeld", "isThrown", "throwDamage", "updatedAt"
       ]
     }
   },
   "firestore": {
     "/users/{userId}/characters/{characterId}": {
-      "schema": {
-        "$ref": "#/entities/CharacterProfile"
-      },
+      "schema": { "$ref": "#/entities/CharacterProfile" },
       "description": "Stores the authenticated user's wizard characters and progression."
+    },
+    "/player_profiles/{profileId}": {
+      "schema": { "$ref": "#/entities/PlayerProfile" },
+      "description": "Stores wizard character profiles keyed by player name/code for reload-safe persistence."
+    },
+    "/rooms/{roomId}": {
+      "schema": { "$ref": "#/entities/GameRoom" },
+      "description": "Multiplayer co-op and duel room metadata."
+    },
+    "/rooms/{roomId}/players/{playerId}": {
+      "schema": { "$ref": "#/entities/RoomPlayer" },
+      "description": "Live players inside a room."
+    },
+    "/rooms/{roomId}/enemies/{enemyId}": {
+      "schema": { "$ref": "#/entities/RoomEnemy" },
+      "description": "Shared enemy state inside a co-op room."
+    },
+    "/rooms/{roomId}/events/{eventId}": {
+      "schema": { "$ref": "#/entities/RoomEvent" },
+      "description": "Real-time spell cast and player hit events in a room."
+    },
+    "/rooms/{roomId}/world_events/{eventKey}": {
+      "schema": { "$ref": "#/entities/RoomWorldEvent" },
+      "description": "Shared world interaction state (walls, campfires, chests, traps, props) in a room."
     }
   }
 }
