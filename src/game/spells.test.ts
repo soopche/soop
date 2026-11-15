@@ -37,6 +37,8 @@ import {
   getSpellCooldownForLevel,
   getSpellHotkeyLabel,
   getSpellUpgradeCost,
+  getEnemyTwoBallVolleyAngles,
+  getDarkKiterVolleyAngles,
   getTeleportMaxRange,
   GLACIUS_SLOW_DURATION_SEC,
   GLACIUS_SLOW_FACTOR,
@@ -156,6 +158,16 @@ import {
   unlockStageForCharacter,
   calculatePracticeGestureXp,
   findAimedWoodenWall,
+  ALTERNATIVE_QUICK_CAST_QUALITY,
+  resolveControlSchemeCastParams,
+  cycleSpellByWheel,
+  getStage0TrainingSequence,
+  getStage0StepSpec,
+  isStage0PrepComplete,
+  STAGE_0_TOTAL_ENEMIES,
+  MAX_CORE_SPECIALIZED_SPELLS,
+  EXTRA_SPELL_SPECIALIZATION_SURCHARGE,
+  getTotalReagentCount,
 } from './spells';
 
 test('SPELL_ORDER includes [1..8], [Ё] Teleport, [F] Домой, and [G] Перезарядка (Cooldown Reset), updated shortWords, and CAMPFIRE_WOOD_COST is 3', () => {
@@ -659,14 +671,47 @@ test('Labyrinth Stages 1, 2, and 3 have 14, 18, and 24 floor traps, 5 Stage-2 & 
   assert.equal(segmentHitsWall(36, 80, 36, 55, s1.wallBoxes, 0.25), false);
 });
 
-test('Steeper upgrade and crafting costs require 4/8/14/22 for spells, 4/7/11/16 for pets, and large recipes for staffs', () => {
+test('Steeper upgrade and crafting costs require 8/16/24/32/42 for spells, 3-4 spell specialization surcharge, 4/7/11/16 for pets, and large recipes for staffs', () => {
   assert.equal(MAX_SPELL_LEVEL, 6);
-  assert.equal(getSpellUpgradeCost(1).totalResources, 4);
-  assert.equal(getSpellUpgradeCost(2).totalResources, 8);
-  assert.equal(getSpellUpgradeCost(3).totalResources, 14);
-  assert.equal(getSpellUpgradeCost(4).totalResources, 22);
-  assert.equal(getSpellUpgradeCost(5).totalResources, 30);
+  assert.equal(MAX_CORE_SPECIALIZED_SPELLS, 4);
+  assert.equal(EXTRA_SPELL_SPECIALIZATION_SURCHARGE, 6);
+  assert.equal(getSpellUpgradeCost(1).totalResources, 8);
+  assert.equal(getSpellUpgradeCost(2).totalResources, 16);
+  assert.equal(getSpellUpgradeCost(2).minFlyingReagents, 1);
+  assert.equal(getSpellUpgradeCost(3).totalResources, 24);
+  assert.equal(getSpellUpgradeCost(3).minEliteReagents, 1);
+  assert.equal(getSpellUpgradeCost(4).totalResources, 32);
+  assert.equal(getSpellUpgradeCost(5).totalResources, 42);
   assert.equal(getSpellUpgradeCost(5).minElementalReagents, 3);
+
+  // Verify upgrading a 5th spell beyond 4 specialized spells adds specializationSurcharge (+6 resources per extra spell)
+  const fourUpgradedLevels: Partial<Record<SpellId, number>> = {
+    incendio: 3,
+    glacius: 2,
+    expelliarmus: 2,
+    stupefy: 2,
+    teleport: 1,
+  };
+  assert.equal(
+    getSpellUpgradeCost(1, fourUpgradedLevels, 'incendio').totalResources,
+    8
+  );
+  assert.equal(
+    getSpellUpgradeCost(1, fourUpgradedLevels, 'teleport').totalResources,
+    8 + EXTRA_SPELL_SPECIALIZATION_SURCHARGE
+  );
+  assert.equal(
+    getSpellUpgradeCost(1, fourUpgradedLevels, 'teleport').label,
+    '14 ресурсов'
+  );
+
+  // Verify 2-ball enemy volleys always include 0 (dead-center) + 1 side angle so standing still gets hit
+  assert.deepEqual(getEnemyTwoBallVolleyAngles(0, 0.2), [0, 0.2]);
+  assert.deepEqual(getEnemyTwoBallVolleyAngles(1, 0.2), [0, -0.2]);
+  assert.deepEqual(getDarkKiterVolleyAngles(1, 0), [0]);
+  assert.deepEqual(getDarkKiterVolleyAngles(2, 0), [0, 0.2]);
+  assert.deepEqual(getDarkKiterVolleyAngles(2, 1), [0, -0.2]);
+  assert.deepEqual(getDarkKiterVolleyAngles(3, 0), [-0.2, 0, 0.2]);
 
   assert.equal(getPetTrainingStepCost(1).totalResources, 4);
   assert.equal(getPetTrainingStepCost(2).totalResources, 7);
@@ -674,8 +719,8 @@ test('Steeper upgrade and crafting costs require 4/8/14/22 for spells, 4/7/11/16
   assert.equal(getPetTrainingStepCost(4).totalResources, 16);
 
   const inv: Record<ReagentId, number> = {
-    ancient_wood: 14,
-    mandrake_root: 8,
+    ancient_wood: 18,
+    mandrake_root: 12,
     rat_hair: 0,
     rat_meat: 4,
     bat_meat: 2,
@@ -691,6 +736,18 @@ test('Steeper upgrade and crafting costs require 4/8/14/22 for spells, 4/7/11/16
     earth_essence: 3,
   };
 
+  // Raw cooking meats are excluded from getTotalReagentCount
+  assert.equal(
+    getTotalReagentCount({
+      ...inv,
+      rat_meat: 99,
+      bat_meat: 99,
+      boar_meat: 99,
+      bear_meat: 99,
+    }),
+    getTotalReagentCount(inv)
+  );
+
   assert.equal(canAffordSpellUpgrade(1, inv), true);
   const afterLv2 = consumeSpellUpgradeCost(1, inv);
   assert.equal(afterLv2.mandrake_root, 4);
@@ -705,6 +762,7 @@ test('Steeper upgrade and crafting costs require 4/8/14/22 for spells, 4/7/11/16
 
   const craftInv: Record<ReagentId, number> = {
     ...inv,
+    ancient_wood: 14,
     mandrake_root: 12,
     boar_tusk: 4,
   };
@@ -722,8 +780,8 @@ test('Steeper upgrade and crafting costs require 4/8/14/22 for spells, 4/7/11/16
   }
 });
 
-test('42 categorized quests (including Stage 3-5 elite quests, Bosses 1-5, Walls, and Flawless Run) require manual claimQuestReward', () => {
-  assert.equal(INITIAL_QUESTS.length, 42);
+test('46 categorized quests (including Stage 0 tutorial quests, Stage 3-5 elite quests, Bosses 1-5, Walls, and Flawless Run) require manual claimQuestReward', () => {
+  assert.equal(INITIAL_QUESTS.length, 46);
   const categories = new Set(INITIAL_QUESTS.map((q) => q.category));
   assert.deepEqual(
     Array.from(categories).sort(),
@@ -1922,3 +1980,116 @@ test('Arcane Sword 5-second expiring warning sound (30% quieter) and preserving 
   assert.equal(afterLevelUpKill.nextHp, 42);
   assert.equal(afterLevelUpKill.nextMp, 35);
 });
+
+test('Alternative Control Scheme supports 30% cast on button press, unmodified voice/drawn accuracy, and inverted mouse wheel spell cycling', () => {
+  assert.equal(ALTERNATIVE_QUICK_CAST_QUALITY, 30);
+
+  // 1. Classic mode keeps quick cast as weak unprepared shot ('quick', 0%)
+  const classicQuick = resolveControlSchemeCastParams({
+    controlScheme: 'classic',
+    rawCastMode: 'quick',
+    rawGestureAccuracy: 0,
+  });
+  assert.equal(classicQuick.effectiveCastMode, 'quick');
+  assert.equal(classicQuick.effectiveGestureAccuracy, 0);
+
+  // 2. Alternative mode converts quick cast ([Space] / short [RMB] click) to 30% rune quality ('drawn', 30%)
+  const altQuick = resolveControlSchemeCastParams({
+    controlScheme: 'alternative',
+    rawCastMode: 'quick',
+    rawGestureAccuracy: 0,
+  });
+  assert.equal(altQuick.effectiveCastMode, 'drawn');
+  assert.equal(altQuick.effectiveGestureAccuracy, 30);
+
+  // 3. Voice and Drawn casts are untouched in Alternative mode (no artificial accuracy bonus)
+  const altVoice = resolveControlSchemeCastParams({
+    controlScheme: 'alternative',
+    rawCastMode: 'voice',
+    rawGestureAccuracy: 0,
+  });
+  assert.equal(altVoice.effectiveCastMode, 'voice');
+  assert.equal(altVoice.effectiveGestureAccuracy, 0);
+
+  const altDrawn = resolveControlSchemeCastParams({
+    controlScheme: 'alternative',
+    rawCastMode: 'drawn',
+    rawGestureAccuracy: 62,
+  });
+  assert.equal(altDrawn.effectiveCastMode, 'drawn');
+  assert.equal(altDrawn.effectiveGestureAccuracy, 62);
+
+  // 4. Inverted mouse wheel cycles spells (deltaY < 0 -> next spell, deltaY > 0 -> previous spell)
+  assert.equal(cycleSpellByWheel('incendio', -100), 'glacius');
+  assert.equal(cycleSpellByWheel('incendio', 100), 'cooldown_reset');
+  assert.equal(cycleSpellByWheel('cooldown_reset', -100), 'incendio');
+});
+
+test('Stage 0 (Уровень 0) provides compact training room, 12 sequential 1-by-1 enemies across 3 phases, voice hint after 2 enemies, mandatory pre-wave-3 preparation gate, and XP-only quests', () => {
+  const layout0 = getLabyrinthStageLayout(0);
+  assert.equal(layout0.stage, 0);
+  assert.equal(layout0.halfWidth, 28);
+  assert.equal(layout0.halfLength, 28);
+  assert.equal(layout0.floorTraps.length, 0);
+  assert.equal(layout0.laserTraps.length, 0);
+  assert.equal(layout0.spikeTrapZones.length, 0);
+  assert.equal(isLabyrinthStageTraversable(0), true);
+
+  const seq = getStage0TrainingSequence();
+  assert.equal(seq.length, STAGE_0_TOTAL_ENEMIES);
+  assert.equal(seq.length, 12);
+
+  // Phase 1 (0..3): Stationary targets starting with Rat
+  assert.equal(seq[0].archetype, 'rat_swarmer');
+  assert.equal(seq[0].canMove, false);
+  assert.equal(seq[0].canAttack, false);
+  assert.ok(seq[0].phaseBanner && seq[0].phaseBanner.includes('Этап 1/3'));
+
+  // After first 2 stationary enemies (stepIndex === 2): Voice & Drawn spell suggestion banner
+  const step2 = getStage0StepSpec(2)!;
+  assert.ok(step2.phaseBanner && step2.phaseBanner.includes('ГОЛОСОМ'));
+
+  // Phase 2 (4..7): Moving targets that do not attack
+  assert.equal(seq[4].archetype, 'rat_swarmer');
+  assert.equal(seq[4].canMove, true);
+  assert.equal(seq[4].canAttack, false);
+  assert.ok(seq[4].phaseBanner && seq[4].phaseBanner.includes('Этап 2/3'));
+
+  // Phase 3 (8..11): Requires Campfire + Wall + Potion + Food prep before spawning, then moves and attacks
+  assert.equal(seq[8].archetype, 'rat_swarmer');
+  assert.equal(seq[8].canMove, true);
+  assert.equal(seq[8].canAttack, true);
+  assert.equal(seq[8].requiresPrepBeforeSpawn, true);
+  assert.ok(seq[8].phaseBanner && seq[8].phaseBanner.includes('Этап 3/3'));
+
+  assert.equal(
+    isStage0PrepComplete({
+      campfireBuilt: true,
+      wallBuilt: true,
+      potionCrafted: true,
+      foodCooked: false,
+    }),
+    false
+  );
+  assert.equal(
+    isStage0PrepComplete({
+      campfireBuilt: true,
+      wallBuilt: true,
+      potionCrafted: true,
+      foodCooked: true,
+    }),
+    true
+  );
+
+  // Stage 0 quests award only small XP and zero reagents
+  const stage0Quests = INITIAL_QUESTS.filter((q) => q.id.startsWith('quest_stage0_'));
+  assert.equal(stage0Quests.length, 4);
+  for (const q of stage0Quests) {
+    assert.ok(q.rewardXp > 0 && q.rewardXp <= 20);
+    assert.equal(q.rewardReagents, undefined);
+    assert.equal(q.rewardReagent, undefined);
+  }
+});
+
+
+

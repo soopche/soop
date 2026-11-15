@@ -8,9 +8,11 @@ import {
   ARCANE_SWORD_RANGE,
   ARCANE_SWORD_SWING_COOLDOWN_SEC,
   shouldTriggerArcaneSwordExpiringSound,
+  ControlSchemeId,
   ArtifactId,
   ArtifactSlot,
   BARREL_RESPAWN_SEC,
+  BASIC_RESOURCE_MOB_DROP_CHANCE,
   BEAR_CLEAVE_RADIUS,
   BEAR_FEAR_DURATION_SEC,
   BEAR_FEAR_RADIUS,
@@ -64,19 +66,28 @@ import {
   getLabyrinthStageLayout,
   getLabyrinthWaterLakes,
   getScaledEnemyStatsForMode,
+  getDarkKiterVolleyAngles,
+  getEnemyTwoBallVolleyAngles,
+  getStage0StepSpec,
   getStage5SpawnSpecs,
   getWormBossSplitChildren,
   GLACIUS_SLOW_DURATION_SEC,
   GLACIUS_SLOW_FACTOR,
   HARVEST_NODE_RESPAWN_SEC,
   isPlayerTouchingSpikeLine,
+  isStage0PrepComplete,
   isStage5WormBossArchetype,
   isStageBossDefeated,
   LabyrinthChestSpec,
   LabyrinthMultiplayerMode,
   LabyrinthRuneButtonSpec,
   LabyrinthRuneGateSpec,
+  LabyrinthStageId,
   LaserBeamTrapSpec,
+  STAGE_0_PREP_BANNER,
+  STAGE_0_TOTAL_ENEMIES,
+  Stage0PrepState,
+  Stage0TrainingBehavior,
   MUD_BALL_SCALE_MULTIPLIER,
   MUD_BALL_SLOW_DURATION_SEC,
   MUD_BALL_SLOW_FACTOR,
@@ -231,6 +242,15 @@ export interface HudSnapshot {
     totalSec: number;
     qualityPercent: number;
   } | null;
+  stage0Tutorial?: {
+    stepIndex: number;
+    totalSteps: number;
+    phase: 1 | 2 | 3;
+    waitingForPrep: boolean;
+    completed: boolean;
+    prepState: Stage0PrepState;
+    activeBanner: string;
+  } | null;
   lastCastBanner: {
     spellName: string;
     qualityPercent: number;
@@ -307,7 +327,7 @@ export interface WorldCallbacks {
     }>;
   }) => void;
   onMultiplayerStageAdvance?: (payload: {
-    stage: 1 | 2 | 3 | 4 | 5;
+    stage: LabyrinthStageId;
     victory: boolean;
     reset: boolean;
   }) => void;
@@ -497,6 +517,8 @@ interface EnemyActor {
   leechLatchTimer?: number;
   leechTickAccum?: number;
   frostWindCooldown?: number;
+  stage0Behavior?: Stage0TrainingBehavior;
+  stage0Phase?: 1 | 2 | 3;
 }
 
 interface SpellProjectile {
@@ -724,7 +746,17 @@ export class ArcaneWorldEngine {
   private mode: 'title' | 'playing' | 'paused' | 'gameover' = 'title';
   public mapMode: GameMapMode = 'labyrinth';
   public labyrinthMultiplayerMode: LabyrinthMultiplayerMode = 'shared';
-  public labyrinthStage: 1 | 2 | 3 | 4 | 5 = 1;
+  public labyrinthStage: LabyrinthStageId = 1;
+  private stage0StepIndex = 0;
+  private stage0Completed = false;
+  private stage0PrepState: Stage0PrepState = {
+    active: false,
+    completed: false,
+    campfireBuilt: false,
+    wallBuilt: false,
+    potionCrafted: false,
+    foodCooked: false,
+  };
   public difficultyTier: DifficultyTier = 1;
   private savedCharacterPet: {
     species: TameableSpeciesId;
@@ -803,6 +835,7 @@ export class ArcaneWorldEngine {
   public testInvulnerable = false;
   public simplifiedGraphics = false;
   public graphicsQuality: GraphicsQuality = 'high';
+  public controlScheme: ControlSchemeId = 'classic';
   public tookDamageThisStage = false;
   private keyLightRef: THREE.DirectionalLight | null = null;
 
@@ -986,6 +1019,10 @@ export class ArcaneWorldEngine {
     this.setGraphicsQuality(enabled ? 'medium' : 'high');
   }
 
+  public setControlScheme(scheme: ControlSchemeId) {
+    this.controlScheme = scheme;
+  }
+
   public setGraphicsQuality(quality: GraphicsQuality) {
     this.graphicsQuality = quality;
     this.simplifiedGraphics = quality !== 'high';
@@ -1137,7 +1174,7 @@ export class ArcaneWorldEngine {
     }
   }
 
-  public loadMapMode(targetMode: GameMapMode, stage: 1 | 2 | 3 | 4 | 5 = 1, preserveChosenPet = false) {
+  public loadMapMode(targetMode: GameMapMode, stage: LabyrinthStageId = 1, preserveChosenPet = false) {
     this.mapMode = targetMode;
     this.labyrinthStage = stage;
 
@@ -1225,9 +1262,9 @@ export class ArcaneWorldEngine {
       this.spawnArenaEntities();
     } else {
       this.buildLabyrinthEnvironment();
-      // Spawn at the safe beginning of the first Labyrinth corridor facing East (+X) along the hall
+      // Spawn at the safe beginning of the first Labyrinth corridor facing East (+X) along the hall (or facing North toward the target on Stage 0)
       this.playerPos.set(this.labyrinthStartX, 0, this.labyrinthStartZ);
-      this.yaw = -Math.PI / 2;
+      this.yaw = stage === 0 ? 0 : -Math.PI / 2;
       this.spawnLabyrinthEntities(savedPetState);
     }
     this.pushHudSnapshot();
@@ -1459,6 +1496,8 @@ export class ArcaneWorldEngine {
     const vortex = new THREE.Mesh(portalVortexGeo, portalVortexMat);
     vortex.position.set(0, 5.5, 0);
     this.finishPortalGroup.add(vortex);
+    // On Stage 0 (Уровень 0), the Portal to Stage 1 only appears after all 12 training enemies are defeated!
+    this.finishPortalGroup.visible = this.labyrinthStage !== 0;
     this.worldContentGroup.add(this.finishPortalGroup);
 
     // Spawn the Stage-Specific Shallow Water Lakes (Stage 5 has 2 water lakes in two places!):
@@ -3285,15 +3324,11 @@ export class ArcaneWorldEngine {
     [
       new THREE.Vector3(-14, 0, 8),
       new THREE.Vector3(14, 0, 9),
-      new THREE.Vector3(-16, 0, -9),
-      new THREE.Vector3(16, 0, -8),
     ].forEach((pos, idx) => this.spawnTreeNode(pos, idx));
 
     [
       new THREE.Vector3(-8, 0, 12),
       new THREE.Vector3(8, 0, 12),
-      new THREE.Vector3(-11, 0, -2),
-      new THREE.Vector3(11, 0, -2),
     ].forEach((pos, idx) => this.spawnHerbNode(pos, idx));
 
     const propSpecs: Array<{ pos: THREE.Vector3; kind: PhysicsProp['kind']; name: string }> = [
@@ -3383,143 +3418,81 @@ export class ArcaneWorldEngine {
     // Include several Trees and Mandrake Flowers right in the safe starting zone before any enemies!
     const stage5Specs = this.labyrinthStage === 5 ? getStage5SpawnSpecs() : null;
     const treeSpots =
-      this.labyrinthStage === 5 && stage5Specs
+      this.labyrinthStage === 0
+        ? [new THREE.Vector3(-20, 0, 14), new THREE.Vector3(20, 0, 14)]
+        : this.labyrinthStage === 5 && stage5Specs
         ? stage5Specs.trees.map((pt) => new THREE.Vector3(pt.x, 0, pt.z))
         : this.labyrinthStage === 4
         ? [
-            // Safe start grove right ahead of Stage 4 spawn (-62, 166) before any enemies
             new THREE.Vector3(-48, 0, 172),
-            new THREE.Vector3(-36, 0, 160),
-            new THREE.Vector3(-22, 0, 172),
-            new THREE.Vector3(14, 0, 166),
             new THREE.Vector3(52, 0, 131),
-            new THREE.Vector3(-52, 0, 97),
             new THREE.Vector3(52, 0, 63),
-            new THREE.Vector3(-10, 0, 29),
-            new THREE.Vector3(-52, 0, -5),
-            new THREE.Vector3(52, 0, -39),
             new THREE.Vector3(-52, 0, -73),
-            new THREE.Vector3(52, 0, -107),
-            new THREE.Vector3(-52, 0, -138),
           ]
         : this.labyrinthStage === 3
         ? [
-            // Safe start grove right ahead of spawn (-48, 138) before any enemies (strictly on open maze floors!)
             new THREE.Vector3(-34, 0, 142),
-            new THREE.Vector3(-24, 0, 130),
-            new THREE.Vector3(-12, 0, 142),
-            new THREE.Vector3(16, 0, 134),
             new THREE.Vector3(52, 0, 84),
-            new THREE.Vector3(-28, 0, 84),
-            new THREE.Vector3(-54, 0, 56),
-            new THREE.Vector3(32, 0, 56),
             new THREE.Vector3(-44, 0, 14),
-            new THREE.Vector3(32, 0, 26),
-            new THREE.Vector3(48, 0, -24),
-            new THREE.Vector3(-36, 0, -24),
             new THREE.Vector3(44, 0, -72),
           ]
         : this.labyrinthStage === 2
         ? [
-            // Safe start grove right ahead of spawn (-44, 106) before any enemies (strictly on open 20m maze floors!)
             new THREE.Vector3(-31, 0, 110),
-            new THREE.Vector3(-21, 0, 98),
-            new THREE.Vector3(-9, 0, 110),
-            new THREE.Vector3(24, 0, 108),
             new THREE.Vector3(48, 0, 72),
-            new THREE.Vector3(0, 0, 76),
-            new THREE.Vector3(-36, 0, 66),
-            new THREE.Vector3(48, 0, 44),
             new THREE.Vector3(24, 0, 22),
-            new THREE.Vector3(0, 0, -6),
             new THREE.Vector3(-28, 0, -56),
-            new THREE.Vector3(-36, 0, -78),
           ]
         : [
-            // Safe start grove right ahead of spawn (-40, 92) before any enemies (outside secret rooms)
             new THREE.Vector3(-28, 0, 96),
-            new THREE.Vector3(-18, 0, 85),
-            new THREE.Vector3(-6, 0, 95),
-            new THREE.Vector3(14, 0, 88),
             new THREE.Vector3(44, 0, 74),
-            new THREE.Vector3(12, 0, 48),
             new THREE.Vector3(-24, 0, 38),
-            new THREE.Vector3(-12, 0, 8),
-            new THREE.Vector3(44, 0, -4),
             new THREE.Vector3(-12, 0, -32),
-            new THREE.Vector3(-44, 0, -64),
           ];
     treeSpots.forEach((p, i) => this.spawnTreeNode(p, i));
 
     const herbSpots =
-      this.labyrinthStage === 5 && stage5Specs
+      this.labyrinthStage === 0
+        ? [new THREE.Vector3(-20, 0, 6), new THREE.Vector3(20, 0, 6)]
+        : this.labyrinthStage === 5 && stage5Specs
         ? stage5Specs.herbs.map((pt) => new THREE.Vector3(pt.x, 0, pt.z))
         : this.labyrinthStage === 4
         ? [
             new THREE.Vector3(-44, 0, 162),
-            new THREE.Vector3(-30, 0, 171),
-            new THREE.Vector3(-16, 0, 162),
-            new THREE.Vector3(4, 0, 168),
-            new THREE.Vector3(40, 0, 131),
             new THREE.Vector3(-44, 0, 97),
-            new THREE.Vector3(40, 0, 63),
             new THREE.Vector3(4, 0, 29),
-            new THREE.Vector3(-40, 0, -5),
-            new THREE.Vector3(42, 0, -39),
             new THREE.Vector3(-40, 0, -73),
-            new THREE.Vector3(4, 0, -107),
-            new THREE.Vector3(-36, 0, -138),
           ]
         : this.labyrinthStage === 3
         ? [
-            // Safe start Mandrake flowers right ahead of spawn (-48, 138)
             new THREE.Vector3(-37, 0, 132),
-            new THREE.Vector3(-28, 0, 142),
-            new THREE.Vector3(-16, 0, 133),
-            new THREE.Vector3(4, 0, 136),
-            new THREE.Vector3(48, 0, 96),
             new THREE.Vector3(-44, 0, 84),
-            new THREE.Vector3(0, 0, 56),
-            new THREE.Vector3(-54, 0, 48),
             new THREE.Vector3(24, 0, 28),
-            new THREE.Vector3(48, 0, 2),
             new THREE.Vector3(-28, 0, -36),
-            new THREE.Vector3(32, 0, -82),
           ]
         : this.labyrinthStage === 2
         ? [
-            // Safe start Mandrake flowers right ahead of spawn (-44, 106)
             new THREE.Vector3(-34, 0, 100),
-            new THREE.Vector3(-25, 0, 110),
-            new THREE.Vector3(-14, 0, 102),
-            new THREE.Vector3(28, 0, 98),
             new THREE.Vector3(34, 0, 66),
-            new THREE.Vector3(-4, 0, 64),
-            new THREE.Vector3(28, 0, 44),
-            new THREE.Vector3(48, 0, 22),
             new THREE.Vector3(28, 0, -6),
-            new THREE.Vector3(-28, 0, -42),
             new THREE.Vector3(24, 0, -78),
           ]
         : [
-            // Safe start Mandrake flowers right ahead of spawn (-40, 92)
             new THREE.Vector3(-31, 0, 87),
-            new THREE.Vector3(-22, 0, 94),
-            new THREE.Vector3(-11, 0, 88),
-            new THREE.Vector3(6, 0, 90),
-            new THREE.Vector3(28, 0, 78),
             new THREE.Vector3(-18, 0, 48),
-            new THREE.Vector3(-28, 0, 14),
             new THREE.Vector3(24, 0, 8),
-            new THREE.Vector3(24, 0, -32),
             new THREE.Vector3(-28, 0, -44),
-            new THREE.Vector3(-14, 0, -78),
           ];
     herbSpots.forEach((p, i) => this.spawnHerbNode(p, i));
 
     // 3. Physics props for Telekinesis shields & Explosive Red Barrels along the Labyrinth (no grey obelisk towers!)
     const propSpots: Array<{ pos: THREE.Vector3; kind: PhysicsProp['kind']; name: string }> =
-      this.labyrinthStage === 5 && stage5Specs
+      this.labyrinthStage === 0
+        ? [
+            { pos: new THREE.Vector3(-14, 0, -4), kind: 'barrel', name: 'Красная взрывная бочка' },
+            { pos: new THREE.Vector3(14, 0, -4), kind: 'shield', name: 'Рунный щит стража' },
+          ]
+        : this.labyrinthStage === 5 && stage5Specs
         ? stage5Specs.props.map((p) => ({
             pos: new THREE.Vector3(p.x, 0, p.z),
             kind: p.kind,
@@ -3577,7 +3550,19 @@ export class ArcaneWorldEngine {
     propSpots.forEach((s, i) => this.spawnPhysicsProp(s.pos, s.kind, s.name, i));
 
     // 4. Enemies across the Labyrinth (pushed past the safe starting grove so zero enemies attack at spawn!)
-    if (this.labyrinthStage === 1) {
+    if (this.labyrinthStage === 0) {
+      this.stage0StepIndex = 0;
+      this.stage0Completed = false;
+      this.stage0PrepState = {
+        active: false,
+        completed: false,
+        campfireBuilt: false,
+        wallBuilt: false,
+        potionCrafted: false,
+        foodCooked: false,
+      };
+      this.spawnNextStage0Enemy();
+    } else if (this.labyrinthStage === 1) {
       const stage1Enemies: Array<{ pos: THREE.Vector3; arch: EnemyActor['archetype'] }> = [
         // First enemies placed near the East turn (X >= 28, Z <= 78), well beyond the safe starting grove!
         { pos: new THREE.Vector3(28, 0, 78), arch: 'rat_swarmer' },
@@ -4905,6 +4890,10 @@ export class ArcaneWorldEngine {
         z: Number(pos.z.toFixed(2)),
       });
     }
+    if (this.mapMode === 'labyrinth' && this.labyrinthStage === 0) {
+      this.igniteCampfire(actor, fromRemote);
+      this.notifyStage0PrepAction('campfire');
+    }
     this.pushHudSnapshot();
     return actor;
   }
@@ -5095,8 +5084,115 @@ export class ArcaneWorldEngine {
         rotY,
       });
     }
+    if (this.mapMode === 'labyrinth' && this.labyrinthStage === 0) {
+      this.notifyStage0PrepAction('wall');
+    }
     this.pushHudSnapshot();
     return wallActor;
+  }
+
+  /**
+   * Spawns the next 1-by-1 enemy on Stage 0 (Уровень 0) or pauses at Step 8 for the mandatory Campfire/Wall/Potion/Food preparation gate.
+   */
+  private spawnNextStage0Enemy() {
+    if (this.mapMode !== 'labyrinth' || this.labyrinthStage !== 0) return;
+    const spec = getStage0StepSpec(this.stage0StepIndex);
+    if (!spec) {
+      this.stage0Completed = true;
+      if (this.finishPortalGroup) {
+        this.finishPortalGroup.visible = true;
+      }
+      this.spawnParticles(_v1.copy(this.labyrinthGoalPos).setY(2.5), 0x38bdf8, 42, 7.5);
+      audioEngine.playVictoryFanfare();
+      this.lastCastBanner = {
+        spellName: '🌀 Уровень 0 пройден! Открылся Портал на 1-й уровень Лабиринта — войдите в него!',
+        qualityPercent: 100,
+        damage: 0,
+        detail: '',
+        color: '#22c55e',
+        timestamp: performance.now(),
+      };
+      this.pushHudSnapshot();
+      return;
+    }
+
+    if (spec.requiresPrepBeforeSpawn && !this.stage0PrepState.completed) {
+      if (isStage0PrepComplete(this.stage0PrepState)) {
+        this.stage0PrepState.completed = true;
+        this.stage0PrepState.active = false;
+        this.callbacks.onQuestEvent('stage0_prep_complete', 1);
+      } else {
+        this.stage0PrepState.active = true;
+        this.callbacks.onLootCollected(
+          'ancient_wood',
+          5,
+          '⛺ Подготовка к 3-й волне: выданы припасы для Костра [C], Стены [B], Зелья и Еды [I]!'
+        );
+        this.callbacks.onLootCollected('mandrake_root', 2, '');
+        this.callbacks.onLootCollected('rat_meat', 2, '');
+        this.lastCastBanner = {
+          spellName: STAGE_0_PREP_BANNER,
+          qualityPercent: 100,
+          damage: 0,
+          detail: '',
+          color: '#f59e0b',
+          timestamp: performance.now(),
+        };
+        this.pushHudSnapshot();
+        return;
+      }
+    }
+
+    const pos = new THREE.Vector3(spec.spawnX, 0, spec.spawnZ);
+    this.spawnSingleEnemy(spec.archetype, pos, spec.stepIndex, 1);
+    const spawned = this.enemies[this.enemies.length - 1];
+    if (spawned) {
+      spawned.stage0Behavior = spec.behavior;
+      spawned.stage0Phase = spec.phase;
+      spawned.state = spec.canMove ? 'seek' : 'idle';
+      this.spawnParticles(_v1.copy(pos).setY(1.2), 0x38bdf8, 22, 5.0);
+    }
+
+    if (spec.phaseBanner) {
+      this.lastCastBanner = {
+        spellName: spec.phaseBanner,
+        qualityPercent: 100,
+        damage: 0,
+        detail: '',
+        color: spec.phase === 1 ? '#38bdf8' : spec.phase === 2 ? '#fde047' : '#ef4444',
+        timestamp: performance.now(),
+      };
+    }
+    this.pushHudSnapshot();
+  }
+
+  public notifyStage0PrepAction(action: 'campfire' | 'wall' | 'potion' | 'food' | 'complete_all') {
+    if (action === 'campfire') this.stage0PrepState.campfireBuilt = true;
+    if (action === 'wall') this.stage0PrepState.wallBuilt = true;
+    if (action === 'potion') this.stage0PrepState.potionCrafted = true;
+    if (action === 'food') this.stage0PrepState.foodCooked = true;
+    if (action === 'complete_all') {
+      this.stage0PrepState.campfireBuilt = true;
+      this.stage0PrepState.wallBuilt = true;
+      this.stage0PrepState.potionCrafted = true;
+      this.stage0PrepState.foodCooked = true;
+    }
+
+    if (
+      this.mapMode === 'labyrinth' &&
+      this.labyrinthStage === 0 &&
+      !this.stage0PrepState.completed &&
+      isStage0PrepComplete(this.stage0PrepState)
+    ) {
+      this.stage0PrepState.completed = true;
+      const wasWaiting = this.stage0PrepState.active;
+      this.stage0PrepState.active = false;
+      this.callbacks.onQuestEvent('stage0_prep_complete', 1);
+      if (wasWaiting && this.stage0StepIndex === 8) {
+        this.spawnNextStage0Enemy();
+      }
+    }
+    this.pushHudSnapshot();
   }
 
   /**
@@ -8541,7 +8637,7 @@ export class ArcaneWorldEngine {
     }
   }
 
-  public resetRun(targetMapMode?: GameMapMode, initialStage: 1 | 2 | 3 | 4 | 5 = 1) {
+  public resetRun(targetMapMode?: GameMapMode, initialStage: LabyrinthStageId = 1) {
     this.score = 0;
     this.wave = 1;
     this.enemiesDefeated = 0;
@@ -11206,9 +11302,13 @@ export class ArcaneWorldEngine {
       this.resolveLabyrinthCollisions(this.playerPos);
 
       // Check if player reached the Labyrinth Finish Portal!
-      if (this.playerPos.distanceTo(this.labyrinthGoalPos) < 5.5 && this.mode === 'playing') {
+      if (
+        (this.labyrinthStage !== 0 || this.stage0Completed) &&
+        this.playerPos.distanceTo(this.labyrinthGoalPos) < 5.5 &&
+        this.mode === 'playing'
+      ) {
         // Cannot enter the Portal until the Stage Boss is defeated! ("нельзя пройти в портал пока не убил главного босста уровня")
-        if (!isStageBossDefeated(this.enemies, this.labyrinthStage)) {
+        if (!isStageBossDefeated(this.enemies, this.labyrinthStage, this.stage0Completed)) {
           const pushBack = _v2.copy(this.playerPos).sub(this.labyrinthGoalPos);
           pushBack.y = 0;
           if (pushBack.lengthSq() < 0.01) pushBack.set(0, 0, 1);
@@ -11222,6 +11322,27 @@ export class ArcaneWorldEngine {
             color: '#ef4444',
             timestamp: performance.now(),
           };
+        } else if (this.labyrinthStage === 0) {
+          audioEngine.playVictoryFanfare();
+          this.score += 200;
+          this.bestScore = Math.max(this.bestScore, this.score);
+          this.loadMapMode('labyrinth', 1, true);
+          if (this.labyrinthMultiplayerMode === 'shared') {
+            this.callbacks.onMultiplayerStageAdvance?.({
+              stage: 1,
+              victory: false,
+              reset: false,
+            });
+          }
+          this.lastCastBanner = {
+            spellName: '🌀 Уровень 0 завершён! Вы перешли на Уровень 1 Лабиринта!',
+            qualityPercent: 100,
+            damage: 0,
+            detail: '',
+            color: '#38bdf8',
+            timestamp: performance.now(),
+          };
+          return;
         } else if (this.labyrinthStage === 1) {
           if (!this.tookDamageThisStage) {
             this.callbacks.onQuestEvent('flawless_stage_clear', 1);
@@ -12273,8 +12394,18 @@ export class ArcaneWorldEngine {
           : enemy.isFlying
           ? 28
           : 25;
+      // Stage 0 Phase 1 ('stationary'): Monster stands completely still and does not attack!
+      if (enemy.stage0Behavior === 'stationary') {
+        enemy.velocity.set(0, 0, 0);
+        enemy.state = 'idle';
+        (enemy.telegraphMesh.material as THREE.MeshBasicMaterial).opacity = 0;
+        enemy.mesh.rotation.y = Math.atan2(_v2.x, _v2.z);
+        enemy.mesh.position.copy(enemy.position);
+        continue;
+      }
+
       if (enemy.state === 'idle') {
-        if (distToPlayer < wakeRange && hasLineOfSight) {
+        if ((distToPlayer < wakeRange || enemy.stage0Behavior === 'move_only') && hasLineOfSight) {
           enemy.state = 'seek';
         } else {
           enemy.mesh.position.copy(enemy.position);
@@ -12501,7 +12632,7 @@ export class ArcaneWorldEngine {
       }
 
       // Snow Giant (`frost_charger`) 7-Second Ice Wind Pull Ability ("Снежные гиганты добавим им новую способность они раз в 7 секунд могут притягивать меня к себе ветром ледяным"):
-      if (enemy.archetype === 'frost_charger') {
+      if (enemy.archetype === 'frost_charger' && enemy.stage0Behavior !== 'move_only') {
         enemy.frostWindCooldown = Math.max(0, (enemy.frostWindCooldown ?? 3.5) - dt * freezeFactor);
         if (
           enemy.frostWindCooldown <= 0 &&
@@ -12668,6 +12799,21 @@ export class ArcaneWorldEngine {
 
       if (enemy.state === 'seek') {
         (enemy.telegraphMesh.material as THREE.MeshBasicMaterial).opacity = 0;
+
+        // Stage 0 Phase 2 ('move_only'): Monster approaches the player in motion, but NEVER attacks!
+        if (enemy.stage0Behavior === 'move_only') {
+          if (distToPlayer > 2.2 && hasLineOfSight) {
+            const perpX = -dirToPlayer.z * enemy.strafeDir * 0.35;
+            const perpZ = dirToPlayer.x * enemy.strafeDir * 0.35;
+            enemy.position.x += (dirToPlayer.x + perpX) * enemy.speed * freezeFactor * dt;
+            enemy.position.z += (dirToPlayer.z + perpZ) * enemy.speed * freezeFactor * dt;
+          }
+          if (this.mapMode === 'labyrinth') {
+            this.resolveLabyrinthCollisions(enemy.position, 0.85);
+          }
+          enemy.mesh.position.copy(enemy.position);
+          continue;
+        }
 
         if (enemy.archetype === 'boss_totem') {
           enemy.stateTimer -= dt * freezeFactor;
@@ -13050,8 +13196,9 @@ export class ArcaneWorldEngine {
                 };
               }
             }
+            enemy.attackCycle = (enemy.attackCycle + 1) % 2;
             const spitOrigin = _v1.copy(enemy.position).setY(1.5);
-            for (const ang of [-0.18, 0.18]) {
+            for (const ang of getEnemyTwoBallVolleyAngles(enemy.attackCycle, 0.2)) {
               const cosA = Math.cos(ang);
               const sinA = Math.sin(ang);
               const spreadDir = new THREE.Vector3(
@@ -13252,9 +13399,12 @@ export class ArcaneWorldEngine {
               }
             }
           } else if (enemy.archetype === 'boss_mage_3') {
+            enemy.attackCycle = (enemy.attackCycle + 1) % 2;
             const angles = enemy.enragedPhase2
               ? [-0.32, -0.16, 0, 0.16, 0.32]
-              : [-0.27, -0.09, 0.09, 0.27];
+              : enemy.attackCycle % 2 === 0
+              ? [-0.26, 0, 0.14, 0.28]
+              : [-0.28, -0.14, 0, 0.26];
             for (const ang of angles) {
               const cosA = Math.cos(ang);
               const sinA = Math.sin(ang);
@@ -13305,9 +13455,9 @@ export class ArcaneWorldEngine {
               colorHex: 0xef4444,
             });
           } else if (enemy.archetype === 'dark_kiter') {
+            enemy.attackCycle = (enemy.attackCycle + 1) % 2;
             const stageNum = this.mapMode === 'labyrinth' ? this.labyrinthStage : this.wave;
-            const kiterAngles =
-              stageNum >= 3 ? [-0.2, 0, 0.2] : stageNum === 2 ? [-0.12, 0.12] : [0];
+            const kiterAngles = getDarkKiterVolleyAngles(stageNum, enemy.attackCycle);
             for (const ang of kiterAngles) {
               const cosA = Math.cos(ang);
               const sinA = Math.sin(ang);
@@ -13886,7 +14036,17 @@ export class ArcaneWorldEngine {
       this.bestScore = Math.max(this.bestScore, this.score);
       this.enemiesDefeated += 1;
 
-      this.spawnLootDrop(enemy.position, enemy.lootId);
+      const isStage0Training = this.mapMode === 'labyrinth' && this.labyrinthStage === 0;
+      const isBasicResourceLoot =
+        enemy.lootId === 'rat_hair' ||
+        enemy.lootId === 'ancient_wood' ||
+        enemy.lootId === 'mandrake_root';
+      if (
+        !isStage0Training &&
+        (!isBasicResourceLoot || Math.random() < BASIC_RESOURCE_MOB_DROP_CHANCE)
+      ) {
+        this.spawnLootDrop(enemy.position, enemy.lootId);
+      }
       // Mutant Rats (`rat_swarmer`) also drop Raw Rat Meat (`rat_meat`) for cooking at the Campfire!
       if (enemy.archetype === 'rat_swarmer') {
         this.spawnLootDrop(
@@ -13895,28 +14055,28 @@ export class ArcaneWorldEngine {
         );
       }
       // Wild Boars (`wild_boar`) drop both Boar Tusk (`boar_tusk` for 4th/5th Staff) AND Raw Boar Meat (`boar_meat` for superior Boar Food)!
-      if (enemy.archetype === 'wild_boar') {
+      if (!isStage0Training && enemy.archetype === 'wild_boar') {
         this.spawnLootDrop(
           _v2.copy(enemy.position).add(new THREE.Vector3(0.85, 0, 0.35)),
           'boar_meat'
         );
       }
       // Stage 5 Cave Bears (`cave_bear`) drop Bear Meat (`bear_meat`) + an extra Boar Tusk!
-      if (enemy.archetype === 'cave_bear') {
+      if (!isStage0Training && enemy.archetype === 'cave_bear') {
         this.spawnLootDrop(
           _v2.copy(enemy.position).add(new THREE.Vector3(0.85, 0, 0.35)),
           'boar_tusk'
         );
       }
       // Stage 4 Water Monsters (`water_monster`) drop Water (`water_essence`) AND Raw Bat Meat (`bat_meat`) for Mana Food cooking!
-      if (enemy.archetype === 'water_monster') {
+      if (!isStage0Training && enemy.archetype === 'water_monster') {
         this.spawnLootDrop(
           _v2.copy(enemy.position).add(new THREE.Vector3(0.85, 0, -0.35)),
           'bat_meat'
         );
       }
       // Flying creatures (`sky_dive_gargoyle` & `storm_harpy_shooter`) also drop Raw Bat Meat (`bat_meat`) for cooking at the Campfire!
-      if (enemy.isFlying && enemy.archetype !== 'boss_elemental_4') {
+      if (!isStage0Training && enemy.isFlying && enemy.archetype !== 'boss_elemental_4') {
         this.spawnLootDrop(
           _v2.copy(enemy.position).add(new THREE.Vector3(-0.85, 0, 0.35)),
           'bat_meat'
@@ -13951,6 +14111,17 @@ export class ArcaneWorldEngine {
         this.activeTamedPet.petXp += isBoss ? 40 : 15;
       }
       this.callbacks.onQuestEvent('mob_kill', 1);
+      if (isStage0Training) {
+        if (enemy.stage0Phase === 1) {
+          this.callbacks.onQuestEvent('stage0_kill_stationary', 1);
+        } else if (enemy.stage0Phase === 2) {
+          this.callbacks.onQuestEvent('stage0_kill_moving', 1);
+        } else if (enemy.stage0Phase === 3) {
+          this.callbacks.onQuestEvent('stage0_clear', 1);
+        }
+        this.stage0StepIndex += 1;
+        this.spawnNextStage0Enemy();
+      }
       if (enemy.archetype === 'wild_boar') {
         this.callbacks.onQuestEvent('kill_boar', 1);
       }
@@ -14321,6 +14492,28 @@ export class ArcaneWorldEngine {
             qualityPercent: this.campfireTeleportChannel.qualityPercent,
           }
         : null,
+      stage0Tutorial:
+        this.mapMode === 'labyrinth' && this.labyrinthStage === 0
+          ? {
+              stepIndex: this.stage0StepIndex,
+              totalSteps: STAGE_0_TOTAL_ENEMIES,
+              phase: (Math.min(3, Math.floor(this.stage0StepIndex / 4) + 1) as 1 | 2 | 3),
+              waitingForPrep: this.stage0PrepState.active && !this.stage0PrepState.completed,
+              completed: this.stage0Completed,
+              prepState: { ...this.stage0PrepState },
+              activeBanner: this.stage0Completed
+                ? '🌀 Уровень 0 пройден! Впереди открылся Портал на 1-й уровень Лабиринта — войдите в него!'
+                : this.stage0PrepState.active && !this.stage0PrepState.completed
+                ? STAGE_0_PREP_BANNER
+                : this.stage0StepIndex < 2
+                ? '🎯 Этап 1/3: Неподвижные мишени! Враги стоят на месте — спокойно испытай свои заклинания на 4 монстрах по очереди!'
+                : this.stage0StepIndex < 4
+                ? '🎙️ Совет Арканума: Попробуй убить следующих врагов ГОЛОСОМ — зажми [R] и произнеси заклинание вслух (или нарисуй руну [ПКМ])!'
+                : this.stage0StepIndex < 8
+                ? '🏃 Этап 2/3: Живые мишени! Попробуй попади по врагам в движении — не спеши, они ещё не атакуют!'
+                : '⚔️ Этап 3/3: Настоящий бой! Теперь враги могут бить тебя — укрывайся за стеной, уворачивайся и атакуй!',
+            }
+          : null,
       lastCastBanner:
         this.lastCastBanner && performance.now() - this.lastCastBanner.timestamp < 2400
           ? this.lastCastBanner

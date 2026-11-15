@@ -319,7 +319,11 @@ export type QuestEventType =
   | 'defeat_boss_3'
   | 'defeat_boss_4'
   | 'defeat_boss_5'
-  | 'flawless_stage_clear';
+  | 'flawless_stage_clear'
+  | 'stage0_kill_stationary'
+  | 'stage0_kill_moving'
+  | 'stage0_prep_complete'
+  | 'stage0_clear';
 
 export interface QuestDef {
   id: string;
@@ -1698,6 +1702,60 @@ export const SPELLS: Record<SpellId, SpellDef> = {
 };
 
 export const INITIAL_QUESTS: QuestDef[] = [
+  // === ЗАДАНИЯ 0-ГО УРОВНЯ (ПОДГОТОВИТЕЛЬНЫЙ ЗАЛ · НАГРАДА ТОЛЬКО МАЛЫЙ ОПЫТ) ===
+  {
+    id: 'quest_stage0_stationary',
+    category: 'combat',
+    title: 'Уровень 0: Первые Мишени (Обучение)',
+    description: 'На 0-м уровне одолейте по очереди 4 неподвижных монстров, пробуя заклинания, голос [R] и рунный рисунок [ПКМ].',
+    eventType: 'stage0_kill_stationary',
+    targetCount: 4,
+    currentCount: 0,
+    completed: false,
+    claimed: false,
+    rewardXp: 8,
+    rewardStat: '+8 Опыта (Обучение · только опыт)',
+  },
+  {
+    id: 'quest_stage0_moving',
+    category: 'combat',
+    title: 'Уровень 0: Охота в Движении (Обучение)',
+    description: 'На 2-м этапе 0-го уровня поразите 4 идущих на вас монстров, пока они ещё не атакуют.',
+    eventType: 'stage0_kill_moving',
+    targetCount: 4,
+    currentCount: 0,
+    completed: false,
+    claimed: false,
+    rewardXp: 10,
+    rewardStat: '+10 Опыта (Обучение · только опыт)',
+  },
+  {
+    id: 'quest_stage0_prep',
+    category: 'survival',
+    title: 'Уровень 0: Привал и Крафт перед Боем',
+    description: 'Перед 3-й волной на 0-м уровне постройте костёр [C], возведите стену [B], сварите зелье здоровья и приготовьте еду у костра [I].',
+    eventType: 'stage0_prep_complete',
+    targetCount: 1,
+    currentCount: 0,
+    completed: false,
+    claimed: false,
+    rewardXp: 12,
+    rewardStat: '+12 Опыта (Обучение · только опыт)',
+  },
+  {
+    id: 'quest_stage0_clear',
+    category: 'combat',
+    title: 'Уровень 0: Боевое Крещение (Портал)',
+    description: 'Одолейте 4 атакующих врагов на 3-м этапе 0-го уровня и откройте портал на 1-й уровень Лабиринта.',
+    eventType: 'stage0_clear',
+    targetCount: 4,
+    currentCount: 0,
+    completed: false,
+    claimed: false,
+    rewardXp: 15,
+    rewardStat: '+15 Опыта (Обучение · только опыт)',
+  },
+
   // === КАТЕГОРИЯ: МАГИЯ И РУНЫ ('magic') ===
   {
     id: 'quest_cast_any_5',
@@ -1869,8 +1927,8 @@ export const INITIAL_QUESTS: QuestDef[] = [
     completed: false,
     claimed: false,
     rewardXp: 34,
-    rewardStat: '+2 Дрова древнего тиса · +1 Корень мандрагоры',
-    rewardReagents: { ancient_wood: 2, mandrake_root: 1 },
+    rewardStat: '+1 Дрова древнего тиса · +1 Корень мандрагоры',
+    rewardReagents: { ancient_wood: 1, mandrake_root: 1 },
   },
   {
     id: 'quest_cook_rat_food_4',
@@ -1883,9 +1941,9 @@ export const INITIAL_QUESTS: QuestDef[] = [
     completed: false,
     claimed: false,
     rewardXp: 42,
-    rewardStat: '+8 Макс. Здоровье · +2 Дрова тиса',
+    rewardStat: '+8 Макс. Здоровье · +1 Дрова тиса',
     rewardMaxHp: 8,
-    rewardReagents: { ancient_wood: 2 },
+    rewardReagents: { ancient_wood: 1 },
   },
   {
     id: 'quest_cook_rat_master_6',
@@ -1913,9 +1971,9 @@ export const INITIAL_QUESTS: QuestDef[] = [
     completed: false,
     claimed: false,
     rewardXp: 44,
-    rewardStat: '+5 Макс. Мана · +2 Корень мандрагоры',
+    rewardStat: '+5 Макс. Мана · +1 Корень мандрагоры',
     rewardMaxMp: 5,
-    rewardReagents: { mandrake_root: 2 },
+    rewardReagents: { mandrake_root: 1 },
   },
   {
     id: 'quest_brew_master_potions_4',
@@ -1945,8 +2003,8 @@ export const INITIAL_QUESTS: QuestDef[] = [
     completed: false,
     claimed: false,
     rewardXp: 24,
-    rewardStat: '+2 Дрова древнего тиса',
-    rewardReagents: { ancient_wood: 2 },
+    rewardStat: '+1 Дрова древнего тиса',
+    rewardReagents: { ancient_wood: 1 },
   },
   {
     id: 'quest_engorgio_3',
@@ -1959,8 +2017,8 @@ export const INITIAL_QUESTS: QuestDef[] = [
     completed: false,
     claimed: false,
     rewardXp: 30,
-    rewardStat: '+2 Волос крысы · +1 Сердце горгульи',
-    rewardReagents: { rat_hair: 2, gargoyle_heart: 1 },
+    rewardStat: '+1 Волос крысы · +1 Сердце горгульи',
+    rewardReagents: { rat_hair: 1, gargoyle_heart: 1 },
   },
   {
     id: 'quest_harvest_6',
@@ -1973,8 +2031,8 @@ export const INITIAL_QUESTS: QuestDef[] = [
     completed: false,
     claimed: false,
     rewardXp: 28,
-    rewardStat: '+2 Дрова тиса · +1 Корень мандрагоры',
-    rewardReagents: { ancient_wood: 2, mandrake_root: 1 },
+    rewardStat: '+1 Дрова тиса · +1 Корень мандрагоры',
+    rewardReagents: { ancient_wood: 1, mandrake_root: 1 },
   },
   {
     id: 'quest_tame_pet',
@@ -1987,8 +2045,8 @@ export const INITIAL_QUESTS: QuestDef[] = [
     completed: false,
     claimed: false,
     rewardXp: 32,
-    rewardStat: '+2 Волос крысы · +1 Корень мандрагоры',
-    rewardReagents: { rat_hair: 2, mandrake_root: 1 },
+    rewardStat: '+1 Волос крысы · +1 Корень мандрагоры',
+    rewardReagents: { rat_hair: 1, mandrake_root: 1 },
   },
 
   // === КАТЕГОРИЯ: БОЙ И ОХОТА ('combat') ===
@@ -2188,8 +2246,8 @@ export const INITIAL_QUESTS: QuestDef[] = [
     completed: false,
     claimed: false,
     rewardXp: 40,
-    rewardStat: '+2 Дрова древнего тиса · +1 Корень мандрагоры',
-    rewardReagents: { ancient_wood: 2, mandrake_root: 1 },
+    rewardStat: '+1 Дрова древнего тиса · +1 Корень мандрагоры',
+    rewardReagents: { ancient_wood: 1, mandrake_root: 1 },
   },
   {
     id: 'quest_build_wall_10',
@@ -2202,9 +2260,9 @@ export const INITIAL_QUESTS: QuestDef[] = [
     completed: false,
     claimed: false,
     rewardXp: 85,
-    rewardStat: '+12 Макс. ОЗ · +4 Дрова тиса · +1 Сердце горгульи',
+    rewardStat: '+12 Макс. ОЗ · +1 Дрова тиса · +1 Сердце горгульи',
     rewardMaxHp: 12,
-    rewardReagents: { ancient_wood: 4, gargoyle_heart: 1 },
+    rewardReagents: { ancient_wood: 1, gargoyle_heart: 1 },
   },
   {
     id: 'quest_dismantle_wall_3',
@@ -2217,8 +2275,8 @@ export const INITIAL_QUESTS: QuestDef[] = [
     completed: false,
     claimed: false,
     rewardXp: 36,
-    rewardStat: '+2 Дрова древнего тиса',
-    rewardReagents: { ancient_wood: 2 },
+    rewardStat: '+1 Дрова древнего тиса',
+    rewardReagents: { ancient_wood: 1 },
   },
   {
     id: 'quest_stage5_mobs_12',
@@ -2246,9 +2304,9 @@ export const INITIAL_QUESTS: QuestDef[] = [
     completed: false,
     claimed: false,
     rewardXp: 60,
-    rewardStat: '+6 Макс. ОЗ · +1 Сердце горгульи · +2 Дрова тиса',
+    rewardStat: '+6 Макс. ОЗ · +1 Сердце горгульи · +1 Дрова тиса',
     rewardMaxHp: 6,
-    rewardReagents: { gargoyle_heart: 1, ancient_wood: 2 },
+    rewardReagents: { gargoyle_heart: 1, ancient_wood: 1 },
   },
   {
     id: 'quest_boss_stage_2',
@@ -3260,7 +3318,118 @@ export interface WaterLakeSpec {
  * - Stage 3: Closer to the end of the map (`x: -24, z: -106`, largest size `16.0 x 8.0`)
  * - Stage 4: In the Northwest Maze Wing (`x: -44, z: 68`, size `15.0 x 8.4`)
  */
-export function getLabyrinthWaterLake(stage: 1 | 2 | 3 | 4 | 5): WaterLakeSpec {
+export type LabyrinthStageId = 0 | 1 | 2 | 3 | 4 | 5;
+export type Stage0TrainingBehavior = 'stationary' | 'move_only' | 'combat';
+export type Stage0MonsterArchetype =
+  | 'rat_swarmer'
+  | 'dark_kiter'
+  | 'frost_charger'
+  | 'sky_dive_gargoyle';
+
+export const STAGE_0_ARCHETYPES: readonly Stage0MonsterArchetype[] = [
+  'rat_swarmer',
+  'dark_kiter',
+  'frost_charger',
+  'sky_dive_gargoyle',
+] as const;
+
+export const STAGE_0_TOTAL_ENEMIES = 12;
+
+export interface Stage0StepSpec {
+  stepIndex: number; // 0..11
+  phase: 1 | 2 | 3;
+  archetype: Stage0MonsterArchetype;
+  behavior: Stage0TrainingBehavior;
+  canMove: boolean;
+  canAttack: boolean;
+  requiresPrepBeforeSpawn: boolean;
+  spawnX: number;
+  spawnZ: number;
+  phaseBanner: string | null;
+}
+
+export interface Stage0PrepState {
+  active: boolean;
+  completed: boolean;
+  campfireBuilt: boolean;
+  wallBuilt: boolean;
+  potionCrafted: boolean;
+  foodCooked: boolean;
+}
+
+export const STAGE_0_PREP_BANNER =
+  '⛺ Подготовка к 3-й волне! Прежде чем выйдут атакующие враги: 1) Построй Костёр [C], 2) Возведи Стену [B], 3) У костра открой [I] → «Костёр и Стены» и нарисуй контур Зелья Здоровья и Жареной Крысы!';
+
+export function isStage0PrepComplete(
+  prep: Pick<Stage0PrepState, 'campfireBuilt' | 'wallBuilt' | 'potionCrafted' | 'foodCooked'>
+): boolean {
+  return Boolean(prep.campfireBuilt && prep.wallBuilt && prep.potionCrafted && prep.foodCooked);
+}
+
+/**
+ * Returns the exact specification for step `stepIndex` (0..11) on Stage 0 (Уровень 0):
+ * - Phase 1 (0..3): 4 Stage-1 monsters starting with Rat (`rat_swarmer`), completely stationary (`canMove: false, canAttack: false`).
+ *   After the first 2 stationary monsters (`stepIndex === 2`), displays a banner suggesting casting by Voice [R] or Rune Drawing [ПКМ].
+ * - Phase 2 (4..7): Same 4 monsters 1-by-1, moving toward the player (`canMove: true, canAttack: false`) + phase banner.
+ * - Pre-Phase 3 Preparation Gate (`stepIndex === 8`, `requiresPrepBeforeSpawn: true`): Wave 3 does NOT spawn until the player builds a Campfire [C], builds a Wall [B], brews a Health Potion, and cooks Food at the campfire [I]!
+ * - Phase 3 (8..11): Same 4 monsters 1-by-1, moving AND attacking (`canMove: true, canAttack: true`) + phase banner.
+ */
+export function getStage0StepSpec(stepIndex: number): Stage0StepSpec | null {
+  if (stepIndex < 0 || stepIndex >= STAGE_0_TOTAL_ENEMIES) return null;
+  const phaseIndex = Math.floor(stepIndex / 4); // 0, 1, 2
+  const monsterIndex = stepIndex % 4;
+  const phase = (phaseIndex + 1) as 1 | 2 | 3;
+  const archetype = STAGE_0_ARCHETYPES[monsterIndex];
+  const behavior: Stage0TrainingBehavior =
+    phase === 1 ? 'stationary' : phase === 2 ? 'move_only' : 'combat';
+  const canMove = phase >= 2;
+  const canAttack = phase === 3;
+  const requiresPrepBeforeSpawn = stepIndex === 8;
+  const phaseBanner =
+    stepIndex === 0
+      ? '🎯 Уровень 0 · Этап 1/3: Неподвижные мишени! Враги стоят на месте — спокойно испытай заклинания на 4 монстрах по очереди!'
+      : stepIndex === 2
+      ? '🎙️ Совет Арканума: Попробуй убить следующих врагов ГОЛОСОМ — зажми [R] и произнеси заклинание вслух (или нарисуй руну [ПКМ])!'
+      : stepIndex === 4
+      ? '🏃 Уровень 0 · Этап 2/3: Живые мишени! Попробуй попади по врагам в движении — не спеши, они ещё не атакуют!'
+      : stepIndex === 8
+      ? '⚔️ Уровень 0 · Этап 3/3: Настоящий бой! Теперь враги могут бить тебя — укрывайся за стеной, уворачивайся и атакуй!'
+      : null;
+
+  return {
+    stepIndex,
+    phase,
+    archetype,
+    behavior,
+    canMove,
+    canAttack,
+    requiresPrepBeforeSpawn,
+    spawnX: 0,
+    spawnZ: -2,
+    phaseBanner,
+  };
+}
+
+export function getStage0TrainingSequence(): Stage0StepSpec[] {
+  const list: Stage0StepSpec[] = [];
+  for (let i = 0; i < STAGE_0_TOTAL_ENEMIES; i++) {
+    const spec = getStage0StepSpec(i);
+    if (spec) list.push(spec);
+  }
+  return list;
+}
+
+export function getLabyrinthWaterLake(stage: LabyrinthStageId): WaterLakeSpec {
+  if (stage === 0) {
+    return {
+      id: 'lake_stage_0',
+      x: -16,
+      z: 4,
+      radiusX: 4.8,
+      radiusZ: 4.8,
+      label: 'Малый родник Подготовки (Уровень 0)',
+    };
+  }
   if (stage === 1) {
     return {
       id: 'lake_stage_1',
@@ -3314,7 +3483,7 @@ export function getLabyrinthWaterLake(stage: 1 | 2 | 3 | 4 | 5): WaterLakeSpec {
 /**
  * Returns all shallow water lakes for a stage (Stage 5 has 2 water lakes in two distinct places!).
  */
-export function getLabyrinthWaterLakes(stage: 1 | 2 | 3 | 4 | 5): WaterLakeSpec[] {
+export function getLabyrinthWaterLakes(stage: LabyrinthStageId): WaterLakeSpec[] {
   if (stage === 5) {
     return [
       {
@@ -3346,7 +3515,8 @@ export function getLabyrinthWaterLakes(stage: 1 | 2 | 3 | 4 | 5): WaterLakeSpec[
  * - Stage 4: 28 floor traps (placed in open maze corridors of Stage 4)
  * Each trap explodes when stepped on and deals 30 HP damage!
  */
-export function getLabyrinthFloorTraps(stage: 1 | 2 | 3 | 4 | 5): FloorTrapSpec[] {
+export function getLabyrinthFloorTraps(stage: LabyrinthStageId): FloorTrapSpec[] {
+  if (stage === 0) return [];
   const coords: Array<{ x: number; z: number }> =
     stage === 1
       ? [
@@ -3514,8 +3684,8 @@ export interface LaserBeamTrapSpec {
  * - Stage 3: 6 horizontal ('x' axis) wall-to-wall laser beams across the 24m passage openings
  * - Stage 4: 8 wall-to-wall laser beams across the maze corridors & doorways
  */
-export function getLabyrinthLaserTraps(stage: 1 | 2 | 3 | 4 | 5): LaserBeamTrapSpec[] {
-  if (stage === 1) return [];
+export function getLabyrinthLaserTraps(stage: LabyrinthStageId): LaserBeamTrapSpec[] {
+  if (stage === 0 || stage === 1) return [];
   if (stage === 2) {
     const specs2: Array<{ x: number; z: number; span: number; axis: 'x' | 'z' }> = [
       // 1. Row 1 East doorway (z = 84, X in [38..58], exact 20m span)
@@ -3798,8 +3968,8 @@ function buildSpikeTrapZone(
  * - Stage 4: 3 zones with 3, 4, and 5 lines of spikes (`[3, 4, 5]`) spanning 100% of the maze corridors
  * - Stage 5: 4 zones with 4, 4, 5, and 5 lines of spikes (`[4, 4, 5, 5]`) spanning 100% of the narrow 16m corridors
  */
-export function getLabyrinthSpikeTrapZones(stage: 1 | 2 | 3 | 4 | 5): SpikeTrapZoneSpec[] {
-  if (stage === 1) return [];
+export function getLabyrinthSpikeTrapZones(stage: LabyrinthStageId): SpikeTrapZoneSpec[] {
+  if (stage === 0 || stage === 1) return [];
   if (stage === 2) {
     return [
       buildSpikeTrapZone('spike_s2_0', 2, 'Шипы Западного Коридора (3 ряда)', -28, 38, 20, 3, 'south'),
@@ -3836,7 +4006,7 @@ export function getLabyrinthSpikeTrapZones(stage: 1 | 2 | 3 | 4 | 5): SpikeTrapZ
 
 export interface LabyrinthChestSpec {
   id: string;
-  stage: 1 | 2 | 3 | 4 | 5;
+  stage: LabyrinthStageId;
   label: string;
   x: number;
   z: number;
@@ -3853,7 +4023,8 @@ export interface LabyrinthChestSpec {
  * - Stage 3: 5 chests (Tier-3 and Tier-4 Artifacts only, fewer resources)
  * - Stage 4: 6 chests (Tier-3, Tier-4, and Tier-5 Artifacts as luck rolls, fewer resources)
  */
-export function getLabyrinthChests(stage: 1 | 2 | 3 | 4 | 5): LabyrinthChestSpec[] {
+export function getLabyrinthChests(stage: LabyrinthStageId): LabyrinthChestSpec[] {
+  if (stage === 0) return [];
   if (stage === 1) {
     return [
       {
@@ -3886,7 +4057,7 @@ export function getLabyrinthChests(stage: 1 | 2 | 3 | 4 | 5): LabyrinthChestSpec
         z: -22,
         isSecretRoom: true,
         isSecretRoomChest: true,
-        reagentRewards: { ancient_wood: 2, mandrake_root: 1, rat_hair: 1 },
+        reagentRewards: { ancient_wood: 1, mandrake_root: 1, rat_hair: 1 },
         artifactPool: [], // 3rd chest on Stage 1 contains ONLY resources!
       },
     ];
@@ -3910,7 +4081,7 @@ export function getLabyrinthChests(stage: 1 | 2 | 3 | 4 | 5): LabyrinthChestSpec
         label: 'Сундук Восточного Ответвления (Ресурсы)',
         x: 8,
         z: 46,
-        reagentRewards: { mandrake_root: 2, rat_hair: 1, gargoyle_heart: 1 },
+        reagentRewards: { mandrake_root: 1, gargoyle_heart: 1 },
         artifactPool: [],
       },
       {
@@ -3928,7 +4099,7 @@ export function getLabyrinthChests(stage: 1 | 2 | 3 | 4 | 5): LabyrinthChestSpec
         label: 'Сундук Преддверия Стража II (Ресурсы)',
         x: 48,
         z: -80,
-        reagentRewards: { ancient_wood: 2, gargoyle_heart: 1, harpy_feather: 1 },
+        reagentRewards: { ancient_wood: 1, gargoyle_heart: 1, harpy_feather: 1 },
         artifactPool: [],
       },
     ];
@@ -3943,7 +4114,7 @@ export function getLabyrinthChests(stage: 1 | 2 | 3 | 4 | 5): LabyrinthChestSpec
         label: 'Сундук Северо-Восточной Ниши',
         x: 52,
         z: 106,
-        reagentRewards: { ancient_wood: 2, gargoyle_heart: 1 },
+        reagentRewards: { ancient_wood: 1, gargoyle_heart: 1 },
         artifactPool: ['robe_3', 'gloves_3', 'ring_3', 'boots_3', 'robe_4', 'gloves_4', 'ring_4', 'boots_4'],
       },
       {
@@ -3952,7 +4123,7 @@ export function getLabyrinthChests(stage: 1 | 2 | 3 | 4 | 5): LabyrinthChestSpec
         label: 'Сундук Северо-Западного Зала (Ресурсы)',
         x: -50,
         z: 108,
-        reagentRewards: { mandrake_root: 2, harpy_feather: 1, boar_tusk: 1 },
+        reagentRewards: { mandrake_root: 1, harpy_feather: 1, boar_tusk: 1 },
         artifactPool: [],
       },
       {
@@ -3970,7 +4141,7 @@ export function getLabyrinthChests(stage: 1 | 2 | 3 | 4 | 5): LabyrinthChestSpec
         label: 'Сундук Западного Бастиона (Ресурсы)',
         x: -50,
         z: 26,
-        reagentRewards: { ancient_wood: 2, dark_core_shard: 1, ice_dragon_scale: 1 },
+        reagentRewards: { ancient_wood: 1, dark_core_shard: 1, ice_dragon_scale: 1 },
         artifactPool: [],
       },
       {
@@ -4009,7 +4180,7 @@ export function getLabyrinthChests(stage: 1 | 2 | 3 | 4 | 5): LabyrinthChestSpec
         label: 'Сундук Северо-Западного Свода',
         x: -64,
         z: 132,
-        reagentRewards: { ancient_wood: 2, boar_tusk: 1 },
+        reagentRewards: { ancient_wood: 1, boar_tusk: 1 },
         artifactPool: stage4Pool,
       },
       {
@@ -4018,7 +4189,7 @@ export function getLabyrinthChests(stage: 1 | 2 | 3 | 4 | 5): LabyrinthChestSpec
         label: 'Сундук Северо-Восточного Свода (Ресурсы)',
         x: 64,
         z: 132,
-        reagentRewards: { mandrake_root: 2, ice_dragon_scale: 1, water_essence: 1 },
+        reagentRewards: { mandrake_root: 1, ice_dragon_scale: 1, water_essence: 1 },
         artifactPool: [],
       },
       {
@@ -4070,7 +4241,7 @@ export function getLabyrinthChests(stage: 1 | 2 | 3 | 4 | 5): LabyrinthChestSpec
       z: 168,
       isSecretRoom: true,
       isSecretRoomChest: true,
-      reagentRewards: { fire_essence: 1, ancient_wood: 2 },
+      reagentRewards: { fire_essence: 1, ancient_wood: 1 },
       artifactPool: stage4Pool,
     },
     {
@@ -4103,7 +4274,7 @@ export function getLabyrinthChests(stage: 1 | 2 | 3 | 4 | 5): LabyrinthChestSpec
       z: -16,
       isSecretRoom: true,
       isSecretRoomChest: true,
-      reagentRewards: { earth_essence: 1, mandrake_root: 2 },
+      reagentRewards: { earth_essence: 1, mandrake_root: 1 },
       artifactPool: stage4Pool,
     },
     {
@@ -4173,7 +4344,7 @@ export interface LabyrinthRuneButtonSpec {
 
 export interface LabyrinthRuneGateSpec {
   id: string;
-  stage: 1 | 2 | 3 | 4 | 5;
+  stage: LabyrinthStageId;
   label: string;
   isSecretRoom?: boolean;
   x: number;
@@ -4193,7 +4364,8 @@ export interface LabyrinthRuneGateSpec {
  *   so that GREEN (#22c55e) is strictly reserved for OPEN / ACTIVATED buttons!
  * - All buttons are 30% smaller (`RUNE_BUTTON_SCALE = 0.49`).
  */
-export function getLabyrinthRuneGates(stage: 1 | 2 | 3 | 4 | 5): LabyrinthRuneGateSpec[] {
+export function getLabyrinthRuneGates(stage: LabyrinthStageId): LabyrinthRuneGateSpec[] {
+  if (stage === 0) return [];
   if (stage === 1) {
     return [
       {
@@ -5000,8 +5172,8 @@ export function getLabyrinthRuneGates(stage: 1 | 2 | 3 | 4 | 5): LabyrinthRuneGa
  * - Stage 3: Multi-branching `24m` maze corridors & chambers, 6 horizontal wall-to-wall lasers, 3x4 Spike Trap Zones, 2 Rune Gates, and 6 Chests
  * - Stage 4: Grand Multi-Branching Elemental Maze (`168m x 376m`), 8 wall-to-wall lasers, 3 Spike Trap Zones (`3, 4, 5` lines), 2 Rune Gates, and 6 Chests
  */
-export function getLabyrinthStageLayout(stage: 1 | 2 | 3 | 4 | 5): {
-  stage: 1 | 2 | 3 | 4 | 5;
+export function getLabyrinthStageLayout(stage: LabyrinthStageId): {
+  stage: LabyrinthStageId;
   halfWidth: number;
   halfLength: number;
   startX: number;
@@ -5022,6 +5194,42 @@ export function getLabyrinthStageLayout(stage: 1 | 2 | 3 | 4 | 5): {
   const chests = getLabyrinthChests(stage);
   const runeGates = getLabyrinthRuneGates(stage);
   const waterLake = getLabyrinthWaterLake(stage);
+
+  if (stage === 0) {
+    const halfWidth = 28;
+    const halfLength = 28;
+    const startX = 0;
+    const startZ = 18;
+    const goalZ = -20;
+    const wallSpecs: WallSpec[] = [
+      { x: -halfWidth, z: 0, w: 4, d: halfLength * 2 },
+      { x: halfWidth, z: 0, w: 4, d: halfLength * 2 },
+      { x: 0, z: halfLength, w: halfWidth * 2 + 4, d: 4 },
+      { x: 0, z: -halfLength, w: halfWidth * 2 + 4, d: 4 },
+    ];
+    const wallBoxes = wallSpecs.map((ws) => ({
+      minX: ws.x - ws.w / 2 - 0.85,
+      maxX: ws.x + ws.w / 2 + 0.85,
+      minZ: ws.z - ws.d / 2 - 0.85,
+      maxZ: ws.z + ws.d / 2 + 0.85,
+    }));
+    return {
+      stage: 0,
+      halfWidth,
+      halfLength,
+      startX,
+      startZ,
+      goalZ,
+      wallSpecs,
+      wallBoxes,
+      floorTraps,
+      laserTraps,
+      spikeTrapZones,
+      chests,
+      runeGates,
+      waterLake,
+    };
+  }
 
   if (stage === 1) {
     const halfWidth = 56;
@@ -5463,7 +5671,7 @@ export function segmentHitsWall(
  * Verifies via BFS grid pathfinding that a player can walk continuously from (startX, startZ) to (0, goalZ)
  * on the given Labyrinth stage without being blocked by any wall.
  */
-export function isLabyrinthStageTraversable(stage: 1 | 2 | 3 | 4 | 5): boolean {
+export function isLabyrinthStageTraversable(stage: LabyrinthStageId): boolean {
   const layout = getLabyrinthStageLayout(stage);
   const step = 4; // 4m grid resolution
   const isBlocked = (x: number, z: number) => {
@@ -5573,26 +5781,68 @@ export function craftEquipmentItem(
   };
 }
 
+export const CRAFTING_RESOURCE_IDS: ReagentId[] = [
+  'ancient_wood',
+  'mandrake_root',
+  'rat_hair',
+  'boar_tusk',
+  'gargoyle_heart',
+  'harpy_feather',
+  'dark_core_shard',
+  'ice_dragon_scale',
+  'fire_essence',
+  'water_essence',
+  'earth_essence',
+];
+
+export const MAX_CORE_SPECIALIZED_SPELLS = 4; // Игроку рекомендуется выбрать 3–4 основные способности
+export const EXTRA_SPELL_SPECIALIZATION_SURCHARGE = 6; // +6 ресурсов за каждую прокачанную способность сверх 4 основных
+export const BASIC_RESOURCE_MOB_DROP_CHANCE = 0.35; // 35% шанс выпадения базового ресурса (Волос крысы и др.) с обычных мобов
+
 /**
- * Total count of all resources currently in the player's inventory.
+ * Total count of magical crafting resources currently in the player's inventory
+ * (excludes raw cooking meats `rat_meat`, `bat_meat`, `boar_meat`, `bear_meat`).
  */
 export function getTotalReagentCount(inventory: Record<ReagentId, number>): number {
   let sum = 0;
-  for (const k of Object.keys(REAGENTS) as ReagentId[]) {
+  for (const k of CRAFTING_RESOURCE_IDS) {
     sum += inventory[k] || 0;
   }
   return sum;
 }
 
 /**
- * Steeper Progressive Spell Upgrade Cost (Levels 1 -> 6):
- * - L1 -> L2: 4 ресурса
- * - L2 -> L3: 8 ресурсов
- * - L3 -> L4 (Открывает 2 снаряда!): 14 ресурсов (в т.ч. минимум 2 трофея неба: Сердце Горгульи или Перо Гарпии)
- * - L4 -> L5 (КД 3.0с!): 22 ресурса (в т.ч. минимум 3 трофея неба и 2 редких ядра/чешуи)
- * - L5 -> L6 (Пробуждение Стихий 6 ур.!): 30 ресурсов (в т.ч. минимум 3 эссенции стихий 4-го уровня: Огненная, Водная или Каменное ядро)
+ * Counts how many spells have been upgraded above Level 1 (`level >= 2`).
  */
-export function getSpellUpgradeCost(currentLevel: number): {
+export function countUpgradedSpells(
+  spellLevels?: Partial<Record<SpellId, number>>,
+  excludeSpellId?: SpellId
+): number {
+  if (!spellLevels) return 0;
+  let count = 0;
+  for (const spId of SPELL_ORDER) {
+    if (excludeSpellId && spId === excludeSpellId) continue;
+    if ((spellLevels[spId] || 1) >= 2) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+/**
+ * Steeper Progressive Spell Upgrade Cost (Levels 1 -> 6) + 3–4 Spell Specialization Scaling:
+ * - L1 -> L2: 8 ресурсов
+ * - L2 -> L3: 16 ресурсов (в т.ч. минимум 1 трофей неба: Сердце Горгульи или Перо Гарпии)
+ * - L3 -> L4 (Открывает 2 снаряда!): 24 ресурса (в т.ч. минимум 2 трофея неба и 1 ядро/чешуя)
+ * - L4 -> L5 (КД 3.0с!): 32 ресурса (в т.ч. минимум 3 трофея неба и 2 редких ядра/чешуи)
+ * - L5 -> L6 (Пробуждение Стихий 6 ур.!): 42 ресурса (в т.ч. минимум 3 эссенции стихий 4-го уровня и 2 ядра/чешуи)
+ * - Если у игрока уже прокачано 4 способности (Ур. 2+), прокачка 5-й и следующих способностей стоит на +6 ресурсов дороже за каждую лишнюю способность!
+ */
+export function getSpellUpgradeCost(
+  currentLevel: number,
+  spellLevels?: Partial<Record<SpellId, number>>,
+  targetSpellId?: SpellId
+): {
   totalResources: number;
   requiresFlyingReagent: boolean;
   minFlyingReagents: number;
@@ -5600,74 +5850,124 @@ export function getSpellUpgradeCost(currentLevel: number): {
   minEliteReagents: number;
   requiresElementalReagent: boolean;
   minElementalReagents: number;
+  specializationSurcharge: number;
   label: string;
 } {
+  const otherUpgradedCount = countUpgradedSpells(spellLevels, targetSpellId);
+  const extraBeyondCore = Math.max(0, otherUpgradedCount - MAX_CORE_SPECIALIZED_SPELLS + 1);
+  const specializationSurcharge =
+    spellLevels && otherUpgradedCount >= MAX_CORE_SPECIALIZED_SPELLS
+      ? extraBeyondCore * EXTRA_SPELL_SPECIALIZATION_SURCHARGE
+      : 0;
+
   if (currentLevel <= 1) {
+    const total = 8 + specializationSurcharge;
     return {
-      totalResources: 4,
+      totalResources: total,
       requiresFlyingReagent: false,
       minFlyingReagents: 0,
       requiresEliteReagent: false,
       minEliteReagents: 0,
       requiresElementalReagent: false,
       minElementalReagents: 0,
-      label: '4 ресурса',
+      specializationSurcharge,
+      label: `${total} ресурсов`,
     };
   }
   if (currentLevel === 2) {
+    const total = 16 + specializationSurcharge;
     return {
-      totalResources: 8,
-      requiresFlyingReagent: false,
-      minFlyingReagents: 0,
+      totalResources: total,
+      requiresFlyingReagent: true,
+      minFlyingReagents: 1,
       requiresEliteReagent: false,
       minEliteReagents: 0,
       requiresElementalReagent: false,
       minElementalReagents: 0,
-      label: '8 ресурсов',
+      specializationSurcharge,
+      label: `${total} ресурсов (в т.ч. 1 трофей неба)`,
     };
   }
   if (currentLevel === 3) {
+    const total = 24 + specializationSurcharge;
     return {
-      totalResources: 14,
+      totalResources: total,
       requiresFlyingReagent: true,
       minFlyingReagents: 2,
-      requiresEliteReagent: false,
-      minEliteReagents: 0,
+      requiresEliteReagent: true,
+      minEliteReagents: 1,
       requiresElementalReagent: false,
       minElementalReagents: 0,
-      label: '14 ресурсов (в т.ч. 2 трофея неба)',
+      specializationSurcharge,
+      label: `${total} ресурса (в т.ч. 2 трофея неба и 1 ядро/чешуя)`,
     };
   }
   if (currentLevel === 4) {
+    const total = 32 + specializationSurcharge;
     return {
-      totalResources: 22,
+      totalResources: total,
       requiresFlyingReagent: true,
       minFlyingReagents: 3,
       requiresEliteReagent: true,
       minEliteReagents: 2,
       requiresElementalReagent: false,
       minElementalReagents: 0,
-      label: '22 ресурса (в т.ч. 3 трофея неба и 2 ядра/чешуи)',
+      specializationSurcharge,
+      label: `${total} ресурса (в т.ч. 3 трофея неба и 2 ядра/чешуи)`,
     };
   }
+  const total = 42 + specializationSurcharge;
   return {
-    totalResources: 30,
+    totalResources: total,
     requiresFlyingReagent: false,
     minFlyingReagents: 0,
     requiresEliteReagent: true,
     minEliteReagents: 2,
     requiresElementalReagent: true,
     minElementalReagents: 3,
-    label: '30 ресурсов (в т.ч. 3 эссенции стихий 4-го ур. и 2 ядра/чешуи)',
+    specializationSurcharge,
+    label: `${total} ресурса (в т.ч. 3 эссенции стихий 4-го ур. и 2 ядра/чешуи)`,
   };
+}
+
+/**
+ * Returns projectile spread angles for enemies that fire 2 projectiles at once:
+ * - 1st projectile goes straight down the center (`0` rad) so a stationary player is always hit!
+ * - 2nd projectile goes to one side (`+sideSpreadRad` or `-sideSpreadRad`, alternating with `attackCycle`).
+ */
+export function getEnemyTwoBallVolleyAngles(
+  attackCycle: number,
+  sideSpreadRad = 0.2
+): [number, number] {
+  const absSpread = Math.abs(sideSpreadRad) || 0.2;
+  const sideAngle = Math.abs(Math.trunc(attackCycle)) % 2 === 0 ? absSpread : -absSpread;
+  return [0, sideAngle];
+}
+
+/**
+ * Returns projectile spread angles for `dark_kiter` (`Темный Аколит`) by stage:
+ * - Stage <= 1: `[0]` (single center orb)
+ * - Stage 2: `[0, ±0.2]` (1 center orb + 1 side orb so standing still gets hit!)
+ * - Stage >= 3: `[-0.2, 0, 0.2]` (center orb + both sides)
+ */
+export function getDarkKiterVolleyAngles(stageNum: number, attackCycle = 0): number[] {
+  if (stageNum >= 3) {
+    return [-0.2, 0, 0.2];
+  }
+  if (stageNum === 2) {
+    return getEnemyTwoBallVolleyAngles(attackCycle, 0.2);
+  }
+  return [0];
 }
 
 export function canAffordSpellUpgrade(
   currentLevel: number,
-  inventory: Record<ReagentId, number>
+  inventory: Record<ReagentId, number>,
+  spellLevels?: Partial<Record<SpellId, number>>,
+  targetSpellId?: SpellId
 ): boolean {
   if (currentLevel >= MAX_SPELL_LEVEL) return false;
-  const cost = getSpellUpgradeCost(currentLevel);
+  const cost = getSpellUpgradeCost(currentLevel, spellLevels, targetSpellId);
   const total = getTotalReagentCount(inventory);
   if (total < cost.totalResources) return false;
 
@@ -5691,9 +5991,11 @@ export function canAffordSpellUpgrade(
 
 export function consumeSpellUpgradeCost(
   currentLevel: number,
-  inventory: Record<ReagentId, number>
+  inventory: Record<ReagentId, number>,
+  spellLevels?: Partial<Record<SpellId, number>>,
+  targetSpellId?: SpellId
 ): Record<ReagentId, number> {
-  const cost = getSpellUpgradeCost(currentLevel);
+  const cost = getSpellUpgradeCost(currentLevel, spellLevels, targetSpellId);
   const next = { ...inventory };
   let remaining = cost.totalResources;
 
@@ -5750,6 +6052,7 @@ export function consumeSpellUpgradeCost(
     'mandrake_root',
     'ancient_wood',
     'rat_hair',
+    'boar_tusk',
     'gargoyle_heart',
     'harpy_feather',
     'dark_core_shard',
@@ -6774,31 +7077,15 @@ export function getStage5SpawnSpecs(): Stage5EntitySpawnSpec {
   return {
     trees: [
       { x: -62, z: 210 },
-      { x: -52, z: 196 },
-      { x: -20, z: 210 },
-      { x: -4, z: 196 },
       { x: 80, z: 162 },
-      { x: -48, z: 162 },
-      { x: -16, z: 124 },
       { x: 64, z: 68 },
-      { x: -64, z: 20 },
-      { x: 82, z: -28 },
-      { x: -80, z: -76 },
       { x: 42, z: -124 },
     ],
     herbs: [
       { x: -66, z: 196 },
-      { x: -50, z: 210 },
-      { x: -22, z: 196 },
-      { x: 28, z: 210 },
-      { x: 76, z: 150 },
       { x: -48, z: 150 },
-      { x: 22, z: 124 },
       { x: -48, z: 72 },
-      { x: 72, z: 20 },
-      { x: -48, z: -28 },
       { x: 52, z: -76 },
-      { x: 0, z: -124 },
     ],
     props: [
       { x: -48, z: 204, kind: 'shield', name: 'Рунный щит стража' },
@@ -6890,8 +7177,12 @@ export function getStage5SpawnSpecs(): Stage5EntitySpawnSpec {
  */
 export function isStageBossDefeated(
   enemies: Array<{ archetype: string; state: string; hp: number }>,
-  stage: 1 | 2 | 3 | 4 | 5
+  stage: LabyrinthStageId,
+  stage0Completed = false
 ): boolean {
+  if (stage === 0) {
+    return stage0Completed && enemies.every((e) => e.state === 'ko' || e.hp <= 0);
+  }
   if (stage === 5) {
     const wormBosses = enemies.filter((e) => isStage5WormBossArchetype(e.archetype));
     if (wormBosses.length === 0) return true;
@@ -6971,9 +7262,9 @@ export interface DiabloDifficultyMultipliers {
  */
 export function getDiabloDifficultyMultipliers(
   difficulty: DifficultyTier,
-  stage: 1 | 2 | 3 | 4 | 5 = 1
+  stage: LabyrinthStageId = 1
 ): DiabloDifficultyMultipliers {
-  const clampedStage = Math.max(1, Math.min(5, Math.round(stage))) as 1 | 2 | 3 | 4 | 5;
+  const clampedStage = Math.max(1, Math.min(5, Math.round(stage || 1))) as 1 | 2 | 3 | 4 | 5;
   if (difficulty <= 1) {
     return {
       difficulty: 1,
@@ -7059,34 +7350,37 @@ export const ENEMY_BASE_KILL_XP: Record<string, number> = {
 };
 
 /**
- * Calculates XP awarded for defeating an enemy on a given Labyrinth stage (1..5) and Diablo Difficulty (1..2),
+ * Calculates XP awarded for defeating an enemy on a given Labyrinth stage (0..5) and Diablo Difficulty (1..2),
  * forming a strict 10-step progression from Map 1 (Diff 1 Stage 1) to Map 10 (Diff 2 Stage 5).
  */
 export function evaluateEnemyKillXp(
   archetype: string,
-  stage: 1 | 2 | 3 | 4 | 5 = 1,
+  stage: LabyrinthStageId = 1,
   difficulty: DifficultyTier = 1
 ): number {
   const baseXp = ENEMY_BASE_KILL_XP[archetype] ?? 15;
+  if (stage === 0) {
+    return Math.max(4, Math.round(baseXp * 0.5));
+  }
   const { xpMultiplier } = getDiabloDifficultyMultipliers(difficulty, stage);
   return Math.max(1, Math.round(baseXp * xpMultiplier));
 }
 
 /**
- * Calculates an enemy's base Max HP taking into account archetype, waveNum, Labyrinth stage (1..5), and Diablo Difficulty (1..2).
+ * Calculates an enemy's base Max HP taking into account archetype, waveNum, Labyrinth stage (0..5), and Diablo Difficulty (1..2).
  * Guarantees that on Difficulty 2 (`Кошмар`), even Stage 1 enemies have strictly more HP than Stage 5 enemies on Difficulty 1 (`Обычная`),
  * and continue scaling across Stages 2..5!
  */
 export function evaluateEnemyBaseMaxHp(
   arch: string,
   waveNum: number,
-  stage: 1 | 2 | 3 | 4 | 5,
+  stage: LabyrinthStageId,
   difficulty: DifficultyTier,
   isLabyrinth = true
 ): number {
   // On Difficulty 2 (Nightmare), baseline wave scaling starts above Stage 5 Normal (waveNum = 8, stage 5x1.25)
   const effectiveWave =
-    difficulty >= 2 ? Math.max(waveNum, 8) + stage * 2 : waveNum;
+    difficulty >= 2 ? Math.max(waveNum, 8) + Math.max(1, stage) * 2 : waveNum;
 
   const rawBaseMaxHp =
     arch === 'boss_worm_5_p1'
@@ -7132,7 +7426,9 @@ export function evaluateEnemyBaseMaxHp(
       : 95 + effectiveWave * 24;
 
   const stageHpMult =
-    isLabyrinth && (stage >= 4 || difficulty >= 2) && !isStage5WormBossArchetype(arch)
+    stage === 0
+      ? 0.55
+      : isLabyrinth && (stage >= 4 || difficulty >= 2) && !isStage5WormBossArchetype(arch)
       ? 1.25
       : 1.0;
 
@@ -7223,8 +7519,8 @@ export function createDefaultCharacterProfile(
       cooldown_reset: 1,
     },
     reagentInventory: {
-      ancient_wood: 9,
-      mandrake_root: 2,
+      ancient_wood: 3,
+      mandrake_root: 1,
       rat_hair: 0,
       rat_meat: 2,
       bat_meat: 2,
@@ -7523,3 +7819,48 @@ export function computePlayerVitalsAfterXpGain(params: {
     nextMaxMp,
   };
 }
+
+export type ControlSchemeId = 'classic' | 'alternative';
+
+export const ALTERNATIVE_QUICK_CAST_QUALITY = 30;
+
+/**
+ * Resolves the effective cast mode and gesture accuracy based on the active control scheme.
+ * - 'classic': leaves all cast parameters 100% untouched.
+ * - 'alternative':
+ *   - Upgrades 'quick' casts ([Space] or short [RMB] click without drawing) to 'drawn' at 30% quality so players can cast on button press for 30% power.
+ *   - Leaves 'voice' and 'drawn' / 'voice_and_drawn' untouched ("голосом как обычно", no artificial accuracy bonus).
+ */
+export function resolveControlSchemeCastParams(params: {
+  controlScheme: ControlSchemeId;
+  rawCastMode: CastInputMode;
+  rawGestureAccuracy: number;
+}): {
+  effectiveCastMode: CastInputMode;
+  effectiveGestureAccuracy: number;
+} {
+  if (params.controlScheme === 'alternative' && params.rawCastMode === 'quick') {
+    return {
+      effectiveCastMode: 'drawn',
+      effectiveGestureAccuracy: ALTERNATIVE_QUICK_CAST_QUALITY,
+    };
+  }
+
+  return {
+    effectiveCastMode: params.rawCastMode,
+    effectiveGestureAccuracy: params.rawGestureAccuracy,
+  };
+}
+
+/**
+ * Cycles through SPELL_ORDER using mouse wheel scroll (inverted direction: deltaY < 0 -> next spell, deltaY > 0 -> previous spell).
+ */
+export function cycleSpellByWheel(currentSpellId: SpellId, deltaY: number): SpellId {
+  if (deltaY === 0) return currentSpellId;
+  const idx = SPELL_ORDER.indexOf(currentSpellId);
+  const safeIdx = idx >= 0 ? idx : 0;
+  const step = deltaY < 0 ? 1 : -1;
+  const nextIdx = (safeIdx + step + SPELL_ORDER.length) % SPELL_ORDER.length;
+  return SPELL_ORDER[nextIdx];
+}
+

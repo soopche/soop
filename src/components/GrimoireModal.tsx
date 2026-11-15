@@ -453,8 +453,13 @@ export const GrimoireModal: React.FC<GrimoireModalProps> = ({
     selectedSpellId === 'stupefy';
 
   const totalResources = getTotalReagentCount(reagentInventory);
-  const spellUpgradeCost = getSpellUpgradeCost(activeSpellLevel);
-  const canUpgradeActiveSpell = canAffordSpellUpgrade(activeSpellLevel, reagentInventory);
+  const spellUpgradeCost = getSpellUpgradeCost(activeSpellLevel, spellLevels, selectedSpellId);
+  const canUpgradeActiveSpell = canAffordSpellUpgrade(
+    activeSpellLevel,
+    reagentInventory,
+    spellLevels,
+    selectedSpellId
+  );
 
   const petTrainingCost = getPetTrainingStepCost(tamedPet?.level || 1);
   const canTrainActivePet =
@@ -1594,7 +1599,7 @@ export const GrimoireModal: React.FC<GrimoireModalProps> = ({
                     <span className="font-bold text-[#f5efe6]">
                       Уровень: {activeSpellLevel} / {MAX_SPELL_LEVEL} (+{(activeSpellLevel - 1) * 20}% · КД {activeSpellCooldown}с)
                     </span>
-                    <span className="text-[#fde047]">Ресурсов: {totalResources}</span>
+                    <span className="text-[#fde047]">Ресурсов для крафта: {totalResources}</span>
                   </div>
 
                   {isCombatSpell && (

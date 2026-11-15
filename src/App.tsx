@@ -45,6 +45,7 @@ import {
   getSpellHotkeyLabel,
   LABYRINTH_MULTIPLAYER_MODES,
   LabyrinthMultiplayerMode,
+  LabyrinthStageId,
   MAX_SPELL_LEVEL,
   SPELL_LEVEL_6_EFFECTS,
   ArtifactId,
@@ -70,6 +71,9 @@ import {
   canBuildWoodenWall,
   calculatePracticeGestureXp,
   upgradeAllSpellsByOneLevel,
+  ControlSchemeId,
+  resolveControlSchemeCastParams,
+  cycleSpellByWheel,
 } from './game/spells';
 import { audioEngine, VoiceSpellRecognizer } from './game/audio';
 import {
@@ -161,6 +165,15 @@ export default function App() {
   const [muted, setMuted] = useState(false);
   const [masterVolume, setMasterVolume] = useState(85);
   const [graphicsQuality, setGraphicsQuality] = useState<GraphicsQuality>('high');
+  const [controlScheme, setControlScheme] = useState<ControlSchemeId>(() => {
+    try {
+      return localStorage.getItem('vox_arcanum_control_scheme_v1') === 'alternative'
+        ? 'alternative'
+        : 'classic';
+    } catch {
+      return 'classic';
+    }
+  });
   const [roomInputCode, setRoomInputCode] = useState('arcanum-1');
 
   // Player Progression, Inventory & Customization State
@@ -170,8 +183,8 @@ export default function App() {
   const [selectedSpellId, setSelectedSpellId] = useState<SpellId>('incendio');
   const [spellLevels, setSpellLevels] = useState<Record<SpellId, number>>(INITIAL_SPELL_LEVELS);
   const [reagentInventory, setReagentInventory] = useState<Record<ReagentId, number>>({
-    ancient_wood: 9,
-    mandrake_root: 2,
+    ancient_wood: 3,
+    mandrake_root: 1,
     rat_hair: 0,
     rat_meat: 2,
     bat_meat: 2,
@@ -293,8 +306,16 @@ export default function App() {
   const swordSlashStartXRef = useRef(0);
   const swordSlashFiredDuringDragRef = useRef(false);
   const isLookingDragRef = useRef(false);
+  const altSwordNextHandRef = useRef<1 | -1>(1);
+  const hasFreeLookInitRef = useRef(false);
   const lastPointerPosRef = useRef({ x: 0, y: 0 });
   const gesturePointsRef = useRef<Point2D[]>([]);
+  const altVirtualPenRef = useRef<Point2D>({ x: 110, y: 44 });
+  const altEdgeTurnRef = useRef<{ yawRate: number; pitchRate: number }>({
+    yawRate: 0,
+    pitchRate: 0,
+  });
+  const exitingPointerLockProgrammaticallyRef = useRef(false);
   const [isTracingRune, setIsTracingRune] = useState(false);
 
   // Refs to access current React state inside 3D engine / WebSocket callbacks without re-mounting
@@ -314,6 +335,7 @@ export default function App() {
     equippedArtifacts,
     selfPlayerId,
     pvpPlayerName,
+    controlScheme,
   });
   useEffect(() => {
     stateRef.current = {
@@ -332,6 +354,7 @@ export default function App() {
       equippedArtifacts,
       selfPlayerId,
       pvpPlayerName,
+      controlScheme,
     };
   }, [
     gameState,
@@ -349,6 +372,7 @@ export default function App() {
     equippedArtifacts,
     selfPlayerId,
     pvpPlayerName,
+    controlScheme,
   ]);
 
   useEffect(() => {
@@ -358,6 +382,107 @@ export default function App() {
   const showToast = useCallback((msg: string) => {
     setToastMessage(msg);
   }, []);
+
+  const handleSelectControlScheme = useCallback(
+    (scheme: ControlSchemeId) => {
+      setControlScheme(scheme);
+      stateRef.current.controlScheme = scheme;
+      worldRef.current?.setControlScheme(scheme);
+      try {
+        localStorage.setItem('vox_arcanum_control_scheme_v1', scheme);
+      } catch {
+        // Ignore storage errors
+      }
+      showToast(
+        scheme === 'alternative'
+          ? '⚡ Включено Альтернативное управление: поворот камеры мышью без [ЛКМ], клик [ЛКМ]/[Пробел] — каст 30%, зажать [ПКМ] — рисование руны от жёлтой точки в центре!'
+          : '🪄 Включено Классическое управление'
+      );
+    },
+    [showToast]
+  );
+
+  const tryEngageAlternativePointerLock = useCallback(() => {
+    if (
+      stateRef.current.controlScheme !== 'alternative' ||
+      stateRef.current.gameState !== 'playing' ||
+      stateRef.current.grimoireOpen
+    ) {
+      return;
+    }
+    if (
+      typeof document !== 'undefined' &&
+      !document.pointerLockElement &&
+      canvasMountRef.current?.requestPointerLock
+    ) {
+      try {
+        const lockPromise = canvasMountRef.current.requestPointerLock() as unknown as
+          | Promise<void>
+          | undefined;
+        if (lockPromise && typeof lockPromise.catch === 'function') {
+          lockPromise.catch(() => {});
+        }
+      } catch {
+        // Ignore pointer lock rejection in headless/automated environments
+      }
+    }
+  }, []);
+
+  // Continuous edge-turn fallback in Alternative mode when Pointer Lock is not active so the mouse NEVER hits a dead stop at the screen edge!
+  useEffect(() => {
+    let rafId = 0;
+    let lastTs = performance.now();
+    const step = (now: number) => {
+      const dt = Math.min(0.05, Math.max(0.001, (now - lastTs) / 1000));
+      lastTs = now;
+      const isLocked = typeof document !== 'undefined' && document.pointerLockElement !== null;
+      if (
+        stateRef.current.controlScheme === 'alternative' &&
+        stateRef.current.gameState === 'playing' &&
+        !stateRef.current.grimoireOpen &&
+        !isDrawingGestureRef.current &&
+        !isSwordSlashDragRef.current &&
+        !isLocked
+      ) {
+        const { yawRate, pitchRate } = altEdgeTurnRef.current;
+        if (yawRate !== 0 || pitchRate !== 0) {
+          worldRef.current?.rotateCamera(yawRate * dt, pitchRate * dt);
+        }
+      } else {
+        altEdgeTurnRef.current.yawRate = 0;
+        altEdgeTurnRef.current.pitchRate = 0;
+      }
+      rafId = requestAnimationFrame(step);
+    };
+    rafId = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(rafId);
+  }, []);
+
+  // Release Pointer Lock automatically when menus/modals open or when switching back to Classic controls
+  useEffect(() => {
+    const shouldReleaseLock =
+      controlScheme !== 'alternative' ||
+      gameState !== 'playing' ||
+      grimoireOpen ||
+      buildMenuOpen ||
+      accountModalOpen;
+    if (shouldReleaseLock) {
+      altEdgeTurnRef.current.yawRate = 0;
+      altEdgeTurnRef.current.pitchRate = 0;
+    }
+    if (
+      shouldReleaseLock &&
+      typeof document !== 'undefined' &&
+      document.pointerLockElement
+    ) {
+      exitingPointerLockProgrammaticallyRef.current = true;
+      try {
+        document.exitPointerLock();
+      } catch {
+        // Ignore pointer lock exit errors
+      }
+    }
+  }, [accountModalOpen, buildMenuOpen, controlScheme, gameState, grimoireOpen]);
 
   // Apply a CharacterProfileData snapshot into live React & 3D Engine state
   const applyCharacterProfileToState = useCallback((rawProfile: CharacterProfileData) => {
@@ -866,11 +991,16 @@ export default function App() {
       }
 
       const spellLevel = st.spellLevels[opts.spellId] || 1;
+      const resolvedCast = resolveControlSchemeCastParams({
+        controlScheme: st.controlScheme,
+        rawCastMode: opts.castMode,
+        rawGestureAccuracy: opts.gestureAccuracy,
+      });
 
       const calc = calculateSpellCastStats({
         spellId: opts.spellId,
-        castMode: opts.castMode,
-        gestureAccuracy: opts.gestureAccuracy,
+        castMode: resolvedCast.effectiveCastMode,
+        gestureAccuracy: resolvedCast.effectiveGestureAccuracy,
         voiceMatched: opts.voiceMatched,
         voiceQuality: opts.voiceQuality,
         playerLevel: st.playerLevel,
@@ -1411,6 +1541,7 @@ export default function App() {
 
     worldRef.current = engine;
     engine.setLabyrinthMultiplayerMode(initialLabyrinthMpMode);
+    engine.setControlScheme(stateRef.current.controlScheme);
     (window as unknown as { __voxWorld?: ArcaneWorldEngine }).__voxWorld = engine;
     if (initialModeParam !== 'arena') {
       engine.loadMapMode(initialModeParam);
@@ -1489,7 +1620,7 @@ export default function App() {
     (
       targetMode: GameMapMode,
       customLabyrinthMpMode?: LabyrinthMultiplayerMode,
-      initialStage: 1 | 2 | 3 | 4 | 5 = 1
+      initialStage: LabyrinthStageId = 1
     ) => {
       if (document.activeElement instanceof HTMLElement) {
         document.activeElement.blur();
@@ -1514,7 +1645,7 @@ export default function App() {
       setGrimoireOpen(false);
       setEndStats(null);
       setHudVisibilityMode('full');
-      setShowControlsHelp(targetMode === 'labyrinth');
+      setShowControlsHelp(targetMode === 'labyrinth' && initialStage !== 0);
       setGameState('playing');
       if (worldRef.current) {
         worldRef.current.resetRun(targetMode, initialStage);
@@ -1707,33 +1838,36 @@ export default function App() {
           return;
         }
 
-        // Pressing any action or movement key dismisses the Controls Help overlay immediately
+        // Pressing any action or movement key dismisses the Controls Help overlay immediately and engages Pointer Lock in Alternative mode
         if (
-          showControlsHelp &&
-          (e.code === 'KeyW' ||
-            e.code === 'KeyA' ||
-            e.code === 'KeyS' ||
-            e.code === 'KeyD' ||
-            e.code === 'ArrowUp' ||
-            e.code === 'ArrowDown' ||
-            e.code === 'ArrowLeft' ||
-            e.code === 'ArrowRight' ||
-            e.code === 'KeyQ' ||
-            e.code === 'KeyT' ||
-            e.code === 'KeyE' ||
-            e.code === 'KeyR' ||
-            e.code === 'KeyF' ||
-            e.code === 'KeyC' ||
-            e.code === 'KeyB' ||
-            e.code === 'KeyN' ||
-            e.code === 'KeyZ' ||
-            e.code === 'KeyX' ||
-            e.code === 'KeyV' ||
-            e.code === 'Space' ||
-            e.code === 'Backquote' ||
-            /^Digit[1-8]$/.test(e.code))
+          e.code === 'KeyW' ||
+          e.code === 'KeyA' ||
+          e.code === 'KeyS' ||
+          e.code === 'KeyD' ||
+          e.code === 'ArrowUp' ||
+          e.code === 'ArrowDown' ||
+          e.code === 'ArrowLeft' ||
+          e.code === 'ArrowRight' ||
+          e.code === 'KeyQ' ||
+          e.code === 'KeyT' ||
+          e.code === 'KeyE' ||
+          e.code === 'KeyR' ||
+          e.code === 'KeyF' ||
+          e.code === 'KeyG' ||
+          e.code === 'KeyC' ||
+          e.code === 'KeyB' ||
+          e.code === 'KeyN' ||
+          e.code === 'KeyZ' ||
+          e.code === 'KeyX' ||
+          e.code === 'KeyV' ||
+          e.code === 'Space' ||
+          e.code === 'Backquote' ||
+          /^Digit[1-8]$/.test(e.code)
         ) {
-          setShowControlsHelp(false);
+          if (showControlsHelp) {
+            setShowControlsHelp(false);
+          }
+          tryEngageAlternativePointerLock();
         }
 
         // Hotkey [Ё] (`Backquote`) selects Teleport spell
@@ -1781,9 +1915,19 @@ export default function App() {
           return;
         }
 
-        // [Space] Quick Unprepared Cast without drawing (Replaces [F]; no voice functions on Space!)
+        // [Space] Quick Cast without drawing (in 'alternative' control scheme: 80% combat power or swings active Arcane Sword!)
         if (e.code === 'Space' && !e.repeat) {
           e.preventDefault();
+          if (
+            stateRef.current.controlScheme === 'alternative' &&
+            worldRef.current?.hasActiveArcaneSword() &&
+            stateRef.current.selectedSpellId === 'arcane_sword'
+          ) {
+            const dir = altSwordNextHandRef.current;
+            altSwordNextHandRef.current = dir === 1 ? -1 : 1;
+            worldRef.current.swingArcaneSword(dir);
+            return;
+          }
           const sp = SPELLS[stateRef.current.selectedSpellId];
           triggerSpellCast({
             spellId: sp.id,
@@ -1894,11 +2038,30 @@ export default function App() {
       }
     };
 
+    const onPointerLockChange = () => {
+      hasFreeLookInitRef.current = false;
+      if (typeof document !== 'undefined' && !document.pointerLockElement) {
+        if (exitingPointerLockProgrammaticallyRef.current) {
+          exitingPointerLockProgrammaticallyRef.current = false;
+          return;
+        }
+        if (
+          stateRef.current.controlScheme === 'alternative' &&
+          stateRef.current.gameState === 'playing' &&
+          !stateRef.current.grimoireOpen
+        ) {
+          handleTogglePause();
+        }
+      }
+    };
+
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
+    document.addEventListener('pointerlockchange', onPointerLockChange);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
+      document.removeEventListener('pointerlockchange', onPointerLockChange);
     };
   }, [
     buildMenuOpen,
@@ -1918,6 +2081,7 @@ export default function App() {
     showControlsHelp,
     showToast,
     triggerSpellCast,
+    tryEngageAlternativePointerLock,
   ]);
 
   // Draw live rune guide & player mouse stroke on the center HUD overlay canvas
@@ -1981,6 +2145,24 @@ export default function App() {
         ctx.stroke();
         ctx.restore();
       }
+
+      if (showGuide && points.length > 0) {
+        const tip = points[points.length - 1];
+        ctx.save();
+        ctx.fillStyle = '#ffffff';
+        ctx.strokeStyle = spell.color;
+        ctx.lineWidth = 2.8;
+        ctx.beginPath();
+        ctx.arc(tip.x, tip.y, 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.strokeStyle = 'rgba(253, 224, 71, 0.85)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(tip.x, tip.y, 10, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
     },
     [hud.aimSurfaceTarget, selectedSpellId]
   );
@@ -1991,21 +2173,42 @@ export default function App() {
     }
   }, [gameState, hud.aimSurfaceTarget, isTracingRune, renderHudRuneOverlay, selectedSpellId]);
 
+  const handleViewportWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    if (gameState !== 'playing' || grimoireOpen) return;
+    if (e.deltaY !== 0) {
+      const nextSpell = cycleSpellByWheel(stateRef.current.selectedSpellId, e.deltaY);
+      handleSelectSpell(nextSpell);
+    }
+  };
+
+  const handleViewportPointerLeave = () => {
+    isLookingDragRef.current = false;
+    hasFreeLookInitRef.current = false;
+    altEdgeTurnRef.current.yawRate = 0;
+    altEdgeTurnRef.current.pitchRate = 0;
+  };
+
   const handleViewportPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (gameState !== 'playing' || grimoireOpen) return;
 
     if (e.button === 2 || e.shiftKey) {
       e.preventDefault();
       if (showControlsHelp) setShowControlsHelp(false);
+      isLookingDragRef.current = false;
+      altEdgeTurnRef.current.yawRate = 0;
+      altEdgeTurnRef.current.pitchRate = 0;
+      lastPointerPosRef.current = { x: e.clientX, y: e.clientY };
+      hasFreeLookInitRef.current = true;
+      tryEngageAlternativePointerLock();
 
       // If Arcane Sword is active in hand and `arcane_sword` is selected, RMB performs directional sword slashes!
-      // ("а бьёшь им правой кнопкой мыши, как рисуешь — ведешь вправо меч бьёт вправо, влево — влево")
       if (
         worldRef.current?.hasActiveArcaneSword() &&
         stateRef.current.selectedSpellId === 'arcane_sword'
       ) {
         isSwordSlashDragRef.current = true;
-        swordSlashStartXRef.current = e.clientX;
+        swordSlashStartXRef.current =
+          stateRef.current.controlScheme === 'alternative' ? 0 : e.clientX;
         swordSlashFiredDuringDragRef.current = false;
         return;
       }
@@ -2014,30 +2217,115 @@ export default function App() {
       setIsTracingRune(true);
       const canvas = gestureOverlayCanvasRef.current;
       if (canvas) {
-        const rect = canvas.getBoundingClientRect();
-        const pt = {
-          x: ((e.clientX - rect.left) / rect.width) * canvas.width,
-          y: ((e.clientY - rect.top) / rect.height) * canvas.height,
-        };
-        gesturePointsRef.current = [pt];
-        renderHudRuneOverlay(gesturePointsRef.current, true);
+        if (stateRef.current.controlScheme === 'alternative') {
+          // In Alternative Control Scheme:
+          // Camera rotation pauses while RMB is held, and the virtual wand pen starts directly on the yellow dot of the center rune stencil!
+          const gestureInfo = getActiveSpellGestureInfo(
+            stateRef.current.selectedSpellId,
+            hud.aimSurfaceTarget
+          );
+          const first = gestureInfo.templatePoints[0] || { x: 0.5, y: 0.2 };
+          const startPt = {
+            x: first.x * canvas.width,
+            y: first.y * canvas.height,
+          };
+          altVirtualPenRef.current = { ...startPt };
+          gesturePointsRef.current = [startPt];
+          renderHudRuneOverlay(gesturePointsRef.current, true);
+          worldRef.current?.setWandGestureTraceOffset(first.x, first.y);
+        } else {
+          const rect = canvas.getBoundingClientRect();
+          const pt = {
+            x: ((e.clientX - rect.left) / rect.width) * canvas.width,
+            y: ((e.clientY - rect.top) / rect.height) * canvas.height,
+          };
+          gesturePointsRef.current = [pt];
+          renderHudRuneOverlay(gesturePointsRef.current, true);
+        }
       }
     } else if (e.button === 0) {
-      isLookingDragRef.current = true;
+      if (showControlsHelp) setShowControlsHelp(false);
       lastPointerPosRef.current = { x: e.clientX, y: e.clientY };
+      hasFreeLookInitRef.current = true;
+
+      if (stateRef.current.controlScheme === 'alternative') {
+        tryEngageAlternativePointerLock();
+
+        // In Alternative Control Scheme, LMB click immediately casts the selected spell at 30% power (or swings the Arcane Sword)!
+        if (
+          worldRef.current?.hasActiveArcaneSword() &&
+          stateRef.current.selectedSpellId === 'arcane_sword'
+        ) {
+          worldRef.current.swingArcaneSword(1);
+          return;
+        }
+        triggerSpellCast({
+          spellId: stateRef.current.selectedSpellId,
+          castMode: 'quick',
+          gestureAccuracy: 0,
+          voiceMatched: false,
+        });
+        return;
+      }
+
+      isLookingDragRef.current = true;
     }
   };
 
   const handleViewportPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     if (gameState !== 'playing' || grimoireOpen) return;
 
+    // Safety guard: if RMB was released outside the window/iframe (so `e.buttons` no longer has bit 2 set and Shift is not held),
+    // immediately clear any stuck drawing or sword-slash drag state so the mouse NEVER gets stuck!
+    if (
+      (isDrawingGestureRef.current || isSwordSlashDragRef.current) &&
+      typeof e.buttons === 'number' &&
+      (e.buttons & 2) === 0 &&
+      !e.shiftKey
+    ) {
+      isSwordSlashDragRef.current = false;
+      swordSlashFiredDuringDragRef.current = false;
+      if (isDrawingGestureRef.current) {
+        isDrawingGestureRef.current = false;
+        setIsTracingRune(false);
+        gesturePointsRef.current = [];
+        renderHudRuneOverlay([], false);
+        worldRef.current?.setWandGestureTraceOffset(0.5, 0.5);
+      }
+    }
+
+    const isPointerLocked =
+      typeof document !== 'undefined' && document.pointerLockElement !== null;
+    const rawDx = isPointerLocked
+      ? e.nativeEvent.movementX || 0
+      : hasFreeLookInitRef.current
+      ? e.clientX - lastPointerPosRef.current.x
+      : 0;
+    const rawDy = isPointerLocked
+      ? e.nativeEvent.movementY || 0
+      : hasFreeLookInitRef.current
+      ? e.clientY - lastPointerPosRef.current.y
+      : 0;
+    lastPointerPosRef.current = { x: e.clientX, y: e.clientY };
+    hasFreeLookInitRef.current = true;
+
     if (isSwordSlashDragRef.current) {
-      const dx = e.clientX - swordSlashStartXRef.current;
-      if (Math.abs(dx) >= 14) {
-        const dir: 1 | -1 = dx >= 0 ? 1 : -1;
-        swordSlashStartXRef.current = e.clientX;
-        swordSlashFiredDuringDragRef.current = true;
-        worldRef.current?.swingArcaneSword(dir);
+      if (stateRef.current.controlScheme === 'alternative') {
+        swordSlashStartXRef.current += rawDx;
+        if (Math.abs(swordSlashStartXRef.current) >= 14) {
+          const dir: 1 | -1 = swordSlashStartXRef.current >= 0 ? 1 : -1;
+          swordSlashStartXRef.current = 0;
+          swordSlashFiredDuringDragRef.current = true;
+          worldRef.current?.swingArcaneSword(dir);
+        }
+      } else {
+        const dx = e.clientX - swordSlashStartXRef.current;
+        if (Math.abs(dx) >= 14) {
+          const dir: 1 | -1 = dx >= 0 ? 1 : -1;
+          swordSlashStartXRef.current = e.clientX;
+          swordSlashFiredDuringDragRef.current = true;
+          worldRef.current?.swingArcaneSword(dir);
+        }
       }
       return;
     }
@@ -2045,29 +2333,88 @@ export default function App() {
     if (isDrawingGestureRef.current) {
       const canvas = gestureOverlayCanvasRef.current;
       if (canvas) {
-        const rect = canvas.getBoundingClientRect();
-        const x = ((e.clientX - rect.left) / rect.width) * canvas.width;
-        const y = ((e.clientY - rect.top) / rect.height) * canvas.height;
+        let x: number;
+        let y: number;
+        if (stateRef.current.controlScheme === 'alternative') {
+          const clampedDx = Math.max(-220, Math.min(220, rawDx));
+          const clampedDy = Math.max(-220, Math.min(220, rawDy));
+          // Move the virtual wand pen directly from the yellow starting dot along the center rune stencil while camera aim stays locked!
+          altVirtualPenRef.current.x = Math.max(
+            -16,
+            Math.min(canvas.width + 16, altVirtualPenRef.current.x + clampedDx)
+          );
+          altVirtualPenRef.current.y = Math.max(
+            -16,
+            Math.min(canvas.height + 16, altVirtualPenRef.current.y + clampedDy)
+          );
+          x = altVirtualPenRef.current.x;
+          y = altVirtualPenRef.current.y;
+        } else {
+          const rect = canvas.getBoundingClientRect();
+          x = ((e.clientX - rect.left) / rect.width) * canvas.width;
+          y = ((e.clientY - rect.top) / rect.height) * canvas.height;
+        }
         gesturePointsRef.current.push({ x, y });
         renderHudRuneOverlay(gesturePointsRef.current, true);
         worldRef.current?.setWandGestureTraceOffset(x / canvas.width, y / canvas.height);
       }
+    } else if (stateRef.current.controlScheme === 'alternative') {
+      if (!isPointerLocked && (buildMenuOpen || accountModalOpen)) {
+        altEdgeTurnRef.current.yawRate = 0;
+        altEdgeTurnRef.current.pitchRate = 0;
+        return;
+      }
+      // In Alternative Control Scheme, moving the mouse rotates the camera smoothly without needing to hold LMB!
+      const lookDx = Math.max(-90, Math.min(90, rawDx));
+      const lookDy = Math.max(-90, Math.min(90, rawDy));
+      if (lookDx !== 0 || lookDy !== 0) {
+        worldRef.current?.rotateCamera(lookDx * 0.0042, lookDy * 0.0034);
+      }
+      // When Pointer Lock is not yet active, also update edge-turn rates near the viewport edges so the camera never hits a dead stop!
+      if (!isPointerLocked && typeof window !== 'undefined') {
+        const edgeMargin = 42;
+        const w = Math.max(320, window.innerWidth);
+        const h = Math.max(240, window.innerHeight);
+        let yawRate = 0;
+        let pitchRate = 0;
+        if (e.clientX <= edgeMargin) {
+          yawRate = -((edgeMargin - e.clientX) / edgeMargin) * 2.1;
+        } else if (e.clientX >= w - edgeMargin) {
+          yawRate = ((e.clientX - (w - edgeMargin)) / edgeMargin) * 2.1;
+        }
+        if (e.clientY <= edgeMargin) {
+          pitchRate = -((edgeMargin - e.clientY) / edgeMargin) * 1.1;
+        } else if (e.clientY >= h - edgeMargin) {
+          pitchRate = ((e.clientY - (h - edgeMargin)) / edgeMargin) * 1.1;
+        }
+        altEdgeTurnRef.current.yawRate = yawRate;
+        altEdgeTurnRef.current.pitchRate = pitchRate;
+      } else {
+        altEdgeTurnRef.current.yawRate = 0;
+        altEdgeTurnRef.current.pitchRate = 0;
+      }
     } else if (isLookingDragRef.current) {
-      const dx = e.clientX - lastPointerPosRef.current.x;
-      const dy = e.clientY - lastPointerPosRef.current.y;
-      lastPointerPosRef.current = { x: e.clientX, y: e.clientY };
-      worldRef.current?.rotateCamera(dx * 0.0045, dy * 0.0038);
+      worldRef.current?.rotateCamera(rawDx * 0.0045, rawDy * 0.0038);
     }
   };
 
   const handleViewportPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button === 0 && isLookingDragRef.current) {
+      isLookingDragRef.current = false;
+      return;
+    }
+
     isLookingDragRef.current = false;
 
     if (isSwordSlashDragRef.current) {
       isSwordSlashDragRef.current = false;
       if (!swordSlashFiredDuringDragRef.current) {
-        const dx = e.clientX - swordSlashStartXRef.current;
-        const dir: 1 | -1 = dx < -4 ? -1 : 1;
+        const dir: 1 | -1 =
+          stateRef.current.controlScheme === 'alternative'
+            ? -1
+            : e.clientX - swordSlashStartXRef.current < -4
+            ? -1
+            : 1;
         worldRef.current?.swingArcaneSword(dir);
       }
       swordSlashFiredDuringDragRef.current = false;
@@ -2083,7 +2430,17 @@ export default function App() {
       gesturePointsRef.current = [];
       renderHudRuneOverlay([], false);
 
-      if (pts.length >= 3) {
+      let strokeLenPx = 0;
+      for (let i = 1; i < pts.length; i++) {
+        strokeLenPx += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+      }
+
+      const isActualDrawing =
+        stateRef.current.controlScheme === 'alternative'
+          ? pts.length >= 3 && strokeLenPx >= 22
+          : pts.length >= 3;
+
+      if (isActualDrawing) {
         const equip = EQUIPMENT_CATALOG[equippedStaffId];
         const recentVoice =
           pendingVoiceSpellRef.current &&
@@ -2116,6 +2473,14 @@ export default function App() {
           spokenLabel: SPELLS[targetSpellId].shortWord,
         });
         pendingVoiceSpellRef.current = null;
+      } else if (stateRef.current.controlScheme === 'alternative') {
+        // In Alternative Control Scheme, a short RMB click without drawing fires the spell at 30% power!
+        triggerSpellCast({
+          spellId: selectedSpellId,
+          castMode: 'quick',
+          gestureAccuracy: 0,
+          voiceMatched: false,
+        });
       }
     }
   };
@@ -2125,13 +2490,13 @@ export default function App() {
     const currentLvl = spellLevels[spellId] || 1;
     if (currentLvl >= MAX_SPELL_LEVEL) return;
 
-    const cost = getSpellUpgradeCost(currentLvl);
-    if (!canAffordSpellUpgrade(currentLvl, reagentInventory)) {
+    const cost = getSpellUpgradeCost(currentLvl, spellLevels, spellId);
+    if (!canAffordSpellUpgrade(currentLvl, reagentInventory, spellLevels, spellId)) {
       showToast(`Нужно: ${cost.label}`);
       return;
     }
 
-    const updatedInv = consumeSpellUpgradeCost(currentLvl, reagentInventory);
+    const updatedInv = consumeSpellUpgradeCost(currentLvl, reagentInventory, spellLevels, spellId);
     setReagentInventory(updatedInv);
     const nextLvl = currentLvl + 1;
     setSpellLevels((prev) => ({
@@ -2386,6 +2751,7 @@ export default function App() {
         qEvents.push({ type: 'cook_high_rat_food', amount: 1 });
       }
       recordQuestEvents(qEvents);
+      worldRef.current?.notifyStage0PrepAction('food');
       audioEngine.playPickupChime();
       showToast(
         `🍖 Приготовлено: ${food.name} (+${food.bonusMaxHp} ОЗ, +${food.hpRegenPerSec}/с на ${Math.round(
@@ -2414,6 +2780,7 @@ export default function App() {
         qEvents.push({ type: 'cook_high_rat_food', amount: 1 });
       }
       recordQuestEvents(qEvents);
+      worldRef.current?.notifyStage0PrepAction('food');
       audioEngine.playPickupChime();
       showToast(
         `🐗 Приготовлено: ${boarFood.name} (+${boarFood.bonusMaxHp} ОЗ, +${boarFood.hpRegenPerSec}/с на ${Math.round(
@@ -2442,6 +2809,7 @@ export default function App() {
         qEvents.push({ type: 'cook_high_rat_food', amount: 1 });
       }
       recordQuestEvents(qEvents);
+      worldRef.current?.notifyStage0PrepAction('food');
       audioEngine.playPickupChime();
       showToast(
         `🐻 Приготовлено: ${bearFood.name} (+${bearFood.bonusMaxHp} ОЗ, +${bearFood.hpRegenPerSec}/с на ${Math.round(
@@ -2477,6 +2845,7 @@ export default function App() {
         qEvents.push({ type: 'cook_high_rat_food', amount: 1 });
       }
       recordQuestEvents(qEvents);
+      worldRef.current?.notifyStage0PrepAction('food');
       audioEngine.playPickupChime();
       showToast(
         `🦇${hasWaterCombo ? '💧' : ''} Приготовлено: ${batFood.name} (+${batFood.bonusMaxMp} МП, +${batFood.mpRegenPerSec}/с на ${Math.round(
@@ -2515,6 +2884,7 @@ export default function App() {
       qEvents.push({ type: 'brew_high_potion', amount: 1 });
     }
     recordQuestEvents(qEvents);
+    worldRef.current?.notifyStage0PrepAction('potion');
     audioEngine.playPickupChime();
     showToast(
       `🧪 Сварено: ${potion.name} (+${potion.restoreAmount} ${
@@ -2568,15 +2938,21 @@ export default function App() {
     <main
       className="relative w-screen h-screen overflow-hidden bg-[#09080d] select-none"
       onContextMenu={(e) => e.preventDefault()}
+      onPointerMove={handleViewportPointerMove}
+      onPointerUp={handleViewportPointerUp}
+      onWheel={handleViewportWheel}
     >
       {/* Isolated Three.js WebGL Viewport Container */}
       <div
         ref={canvasMountRef}
         data-testid="webgl-viewport"
         onPointerDown={handleViewportPointerDown}
-        onPointerMove={handleViewportPointerMove}
-        onPointerUp={handleViewportPointerUp}
-        className="absolute inset-0 w-full h-full cursor-crosshair"
+        onPointerLeave={handleViewportPointerLeave}
+        className={`absolute inset-0 w-full h-full ${
+          controlScheme === 'alternative' && gameState === 'playing' && !grimoireOpen
+            ? 'cursor-none'
+            : 'cursor-crosshair'
+        }`}
       />
 
       {/* Peripheral Critical Low-HP Vignette */}
@@ -2889,13 +3265,13 @@ export default function App() {
                     /5
                   </span>
                 </div>
-                <div className="grid grid-cols-5 gap-2">
-                  {([1, 2, 3, 4, 5] as const).map((stageNum) => {
+                <div className="grid grid-cols-6 gap-2">
+                  {([0, 1, 2, 3, 4, 5] as const).map((stageNum) => {
                     const maxUnlocked = getUnlockedStageForDifficulty(
                       { unlockedStageD1, unlockedStageD2 },
                       selectedDifficulty
                     );
-                    const isStageUnlocked = stageNum <= maxUnlocked;
+                    const isStageUnlocked = stageNum === 0 || stageNum <= maxUnlocked;
                     return (
                       <button
                         key={stageNum}
@@ -2916,15 +3292,21 @@ export default function App() {
                             stageNum
                           );
                         }}
-                        className={`py-2 px-2 rounded-lg border text-xs font-bold font-mono-num transition-all cursor-pointer ${
-                          isStageUnlocked
+                        className={`py-2 px-1.5 rounded-lg border text-xs font-bold font-mono-num transition-all cursor-pointer ${
+                          stageNum === 0
+                            ? 'bg-[#132a1f] hover:bg-[#1a3a2b] border-[#22c55e] text-[#bbf7d0]'
+                            : isStageUnlocked
                             ? selectedDifficulty === 2
                               ? 'bg-[#3b151c] hover:bg-[#521b25] border-[#ef4444] text-[#fecaca]'
                               : 'bg-[#1b2436] hover:bg-[#24324a] border-[#38bdf8] text-[#bae6fd]'
                             : 'bg-[#14111d] border-[#2a233d] text-[#64748b] opacity-75'
                         }`}
                       >
-                        {isStageUnlocked ? `▶ Уровень ${stageNum}` : `🔒 Ур. ${stageNum}`}
+                        {stageNum === 0
+                          ? '🎓 Уровень 0'
+                          : isStageUnlocked
+                          ? `▶ Уровень ${stageNum}`
+                          : `🔒 Ур. ${stageNum}`}
                       </button>
                     );
                   })}
@@ -3166,6 +3548,82 @@ export default function App() {
             </div>
           )}
 
+          {/* TOP-CENTER STAGE 0 TUTORIAL & PREPARATION CHECKLIST BANNER */}
+          {hudVisibilityMode !== 'hidden' && hud.stage0Tutorial && (
+            <div
+              data-testid="hud-stage0-tutorial-banner"
+              className="fixed top-4 left-[40%] -translate-x-1/2 z-20 w-[320px] sm:w-[430px] p-2.5 rounded-xl border-2 border-[#38bdf8] shadow-2xl pointer-events-auto"
+              style={{ backgroundColor: 'rgba(15, 13, 26, 0.94)' }}
+            >
+              <div className="flex items-center justify-between text-xs font-bold font-mono-num text-[#fde047] mb-1">
+                <span>🎓 УРОВЕНЬ 0: ПОДГОТОВИТЕЛЬНЫЙ ЗАЛ</span>
+                <span className="text-[#38bdf8]">
+                  {hud.stage0Tutorial.completed
+                    ? '12/12 · Портал открыт!'
+                    : `Этап ${hud.stage0Tutorial.phase}/3 · Враг ${Math.min(
+                        hud.stage0Tutorial.totalSteps,
+                        hud.stage0Tutorial.stepIndex + 1
+                      )}/${hud.stage0Tutorial.totalSteps}`}
+                </span>
+              </div>
+              <div className="text-xs font-semibold text-[#f5efe6] leading-snug">
+                {hud.stage0Tutorial.activeBanner}
+              </div>
+
+              {hud.stage0Tutorial.waitingForPrep && (
+                <div
+                  data-testid="hud-stage0-prep-checklist"
+                  className="mt-2.5 p-2.5 rounded-lg bg-[#181429] border border-[#f59e0b] space-y-1.5 text-[11px] font-mono-num"
+                >
+                  <div className="font-bold text-[#fde047]">
+                    📋 Задание перед 3-й волной (выполните все 4 пункта, чтобы вышли враги):
+                  </div>
+                  <div className="grid grid-cols-2 gap-1.5 text-[#e2e8f0]">
+                    <div
+                      className={
+                        hud.stage0Tutorial.prepState.campfireBuilt
+                          ? 'text-[#4ade80] font-bold'
+                          : 'text-[#cbd5e1]'
+                      }
+                    >
+                      {hud.stage0Tutorial.prepState.campfireBuilt ? '✓' : '○'} 1. Костёр [C]
+                    </div>
+                    <div
+                      className={
+                        hud.stage0Tutorial.prepState.wallBuilt
+                          ? 'text-[#4ade80] font-bold'
+                          : 'text-[#cbd5e1]'
+                      }
+                    >
+                      {hud.stage0Tutorial.prepState.wallBuilt ? '✓' : '○'} 2. Стена [B]
+                    </div>
+                    <div
+                      className={
+                        hud.stage0Tutorial.prepState.potionCrafted
+                          ? 'text-[#4ade80] font-bold'
+                          : 'text-[#cbd5e1]'
+                      }
+                    >
+                      {hud.stage0Tutorial.prepState.potionCrafted ? '✓' : '○'} 3. Зелье у костра [I]
+                    </div>
+                    <div
+                      className={
+                        hud.stage0Tutorial.prepState.foodCooked
+                          ? 'text-[#4ade80] font-bold'
+                          : 'text-[#cbd5e1]'
+                      }
+                    >
+                      {hud.stage0Tutorial.prepState.foodCooked ? '✓' : '○'} 4. Еда у костра [I]
+                    </div>
+                  </div>
+                  <div className="text-[10px] text-[#94a3b8]">
+                    Как рисовать лечилки и еду: постройте Костёр [C], подойдите к нему и нажмите [I] → в блоке «Костёр и Стены» выберите «Зелье Здоровья» и «Жареная Крыса» и обведите контур мышкой!
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* TOP-RIGHT PERIMETER CLUSTER: Push-To-Talk Mic [R] + Construction Dropdown (Костёр / Стена / Сломать) + Artifacts [I] + Quests [Y] + Unified Pause/Settings [Esc] */}
           {hudVisibilityMode !== 'hidden' && (
             <div className="absolute top-4 right-4 flex items-center gap-2 pointer-events-auto">
@@ -3328,7 +3786,7 @@ export default function App() {
             </div>
           )}
 
-          {/* STRICTLY FIXED-POSITION CENTER RETICLE & RUNE GESTURE CANVAS (Zero layout shift / jitter while moving!) */}
+          {/* STRICTLY FIXED-POSITION CENTER RETICLE & RUNE GESTURE CANVAS */}
           <div
             className={`fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[220px] h-[220px] flex items-center justify-center pointer-events-none ${
               hudVisibilityMode === 'hidden' ? 'opacity-0' : 'opacity-100'
@@ -3349,6 +3807,7 @@ export default function App() {
           {/* SEPARATE STATUS BANNERS CONTAINER BELOW THE CENTER CANVAS (Never shifts the rune contour!) */}
           {hudVisibilityMode !== 'hidden' && (
             <div className="fixed left-1/2 top-[calc(50%+114px)] -translate-x-1/2 flex flex-col items-center pointer-events-none">
+
               {/* Contextual Water / Snow Gesture Indicator */}
               {hud.aimSurfaceTarget !== 'none' && (
                 <div
@@ -3586,25 +4045,47 @@ export default function App() {
           {showControlsHelp && hudVisibilityMode !== 'hidden' && (
             <div
               data-testid="controls-help-overlay"
-              className="fixed top-20 left-1/2 -translate-x-1/2 z-30 w-full max-w-[660px] px-4 pointer-events-auto"
+              className={`fixed ${
+                hud.labyrinthStage === 0 && hud.stage0Tutorial ? 'top-44' : 'top-20'
+              } left-1/2 -translate-x-1/2 z-30 w-full max-w-[660px] px-4 pointer-events-none`}
             >
               <div
                 className="p-4 rounded-xl border border-[#f59e0b] shadow-2xl space-y-3"
                 style={{ backgroundColor: 'rgba(14, 12, 22, 0.94)' }}
               >
-                <div className="flex items-center justify-between border-b border-[#2a233d] pb-2">
+                <div className="flex items-center justify-between border-b border-[#2a233d] pb-2 gap-2 flex-wrap">
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-bold text-[#fde047] font-display">
-                      ⌨️ Управление в Лабиринте (Все кнопки)
+                      ⌨️ Управление ({controlScheme === 'alternative' ? '⚡ Альтернативное' : '🪄 Классическое'})
                     </span>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setShowControlsHelp(false)}
-                    className="px-2 py-0.5 text-[11px] font-bold rounded bg-[#231e36] hover:bg-[#322b4d] text-[#cbd5e1] cursor-pointer"
-                  >
-                    Закрыть [ . ]
-                  </button>
+                  <div className="flex items-center gap-1.5 pointer-events-auto">
+                    <button
+                      type="button"
+                      data-testid="help-toggle-control-scheme-btn"
+                      onClick={() =>
+                        handleSelectControlScheme(
+                          controlScheme === 'alternative' ? 'classic' : 'alternative'
+                        )
+                      }
+                      className={`px-2.5 py-0.5 text-[11px] font-bold rounded border cursor-pointer transition-colors ${
+                        controlScheme === 'alternative'
+                          ? 'bg-[#132a1f] border-[#22c55e] text-[#bbf7d0]'
+                          : 'bg-[#1e293b] border-[#38bdf8] text-[#bae6fd]'
+                      }`}
+                    >
+                      {controlScheme === 'alternative'
+                        ? '⚡ Режим: Альтернативный (Легче) ⇄'
+                        : '🪄 Сменить на Альтернативное (Легче) ⇄'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowControlsHelp(false)}
+                      className="px-2 py-0.5 text-[11px] font-bold rounded bg-[#231e36] hover:bg-[#322b4d] text-[#cbd5e1] cursor-pointer"
+                    >
+                      Закрыть [ . ]
+                    </button>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5 text-xs font-mono-num text-[#e2d9f3]">
@@ -3614,11 +4095,19 @@ export default function App() {
                   </div>
                   <div className="flex items-center justify-between py-0.5">
                     <span className="text-[#94a3b8]">Поворот камеры:</span>
-                    <strong className="text-[#fde047]">Зажать [ЛКМ] / [Q] влево / [T] вправо</strong>
+                    <strong className="text-[#fde047]">
+                      {controlScheme === 'alternative'
+                        ? 'Просто движение мыши (без [ЛКМ]!)'
+                        : 'Зажать [ЛКМ] / [Q] влево / [T] вправо'}
+                    </strong>
                   </div>
                   <div className="flex items-center justify-between py-0.5">
                     <span className="text-[#94a3b8]">Рисовать / Удар мечом:</span>
-                    <strong className="text-[#4ade80]">Зажать [ПКМ] (с мечом: ←/→ удар)</strong>
+                    <strong className="text-[#4ade80]">
+                      {controlScheme === 'alternative'
+                        ? 'Зажать [ПКМ] (камера фиксируется, перо сразу на ●!)'
+                        : 'Зажать [ПКМ] (с мечом: ←/→ удар)'}
+                    </strong>
                   </div>
                   <div className="flex items-center justify-between py-0.5">
                     <span className="text-[#94a3b8]">Сказать голосом:</span>
@@ -3626,11 +4115,17 @@ export default function App() {
                   </div>
                   <div className="flex items-center justify-between py-0.5">
                     <span className="text-[#94a3b8]">Выбор заклинаний:</span>
-                    <strong className="text-[#fde047]">[1–8], [Ё] (Прыжок), [F] (К костру)</strong>
+                    <strong className="text-[#fde047]">
+                      Колесо мыши / [1–8], [Ё], [F], [G]
+                    </strong>
                   </div>
                   <div className="flex items-center justify-between py-0.5">
-                    <span className="text-[#94a3b8]">Быстрый каст без рисунка:</span>
-                    <strong className="text-[#fde047]">[Пробел]</strong>
+                    <span className="text-[#94a3b8]">Каст по нажатию:</span>
+                    <strong className="text-[#fde047]">
+                      {controlScheme === 'alternative'
+                        ? 'Клик [ЛКМ] / [Пробел] / Клик [ПКМ] (30% силы!)'
+                        : '[Пробел]'}
+                    </strong>
                   </div>
                   <div className="flex items-center justify-between py-0.5">
                     <span className="text-[#94a3b8]">Сундук (осмотр / взять) / Сбор:</span>
@@ -3808,7 +4303,9 @@ export default function App() {
 
                       {/* Short Spell Word */}
                       <span
-                        className="relative text-xs font-bold leading-none truncate"
+                        className={`relative font-bold leading-none whitespace-nowrap ${
+                          sp.shortWord.length > 8 ? 'text-[9.5px] tracking-tighter' : 'text-xs'
+                        }`}
                         style={{ color: sp.color }}
                       >
                         {sp.shortWord}
@@ -3974,6 +4471,52 @@ export default function App() {
                 <span className="text-xs font-mono-num font-bold text-[#fde047] w-11 text-right">
                   {muted ? '0%' : `${masterVolume}%`}
                 </span>
+              </div>
+            </div>
+
+            {/* CONTROL SCHEME SETTINGS (Classic vs Alternative Easy/Action Mode for Friends) */}
+            <div
+              data-testid="pause-control-scheme-settings"
+              className="p-3.5 rounded-xl bg-[#1b1729] border border-[#2a233d] text-left space-y-2"
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold uppercase tracking-wider text-[#e2d9f3]">
+                  🎮 Режим управления
+                </span>
+                <span className="text-[10px] font-mono-num text-[#38bdf8]">
+                  {controlScheme === 'alternative' ? '⚡ Удобнее и легче в бою' : '🪄 Стандартное'}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  data-testid="control-scheme-classic-btn"
+                  onClick={() => handleSelectControlScheme('classic')}
+                  className={`py-2 px-2.5 rounded-lg border text-xs font-bold transition-colors cursor-pointer ${
+                    controlScheme === 'classic'
+                      ? 'bg-[#2a1f10] border-[#f59e0b] text-[#fde047]'
+                      : 'bg-[#12101b] border-[#2a233d] text-[#94a3b8] hover:text-white'
+                  }`}
+                >
+                  🪄 Классическое (Как есть)
+                </button>
+                <button
+                  type="button"
+                  data-testid="control-scheme-alternative-btn"
+                  onClick={() => handleSelectControlScheme('alternative')}
+                  className={`py-2 px-2.5 rounded-lg border text-xs font-bold transition-colors cursor-pointer ${
+                    controlScheme === 'alternative'
+                      ? 'bg-[#132a1f] border-[#22c55e] text-[#bbf7d0]'
+                      : 'bg-[#12101b] border-[#2a233d] text-[#94a3b8] hover:text-white'
+                  }`}
+                >
+                  ⚡ Альтернативное (Легче)
+                </button>
+              </div>
+              <div className="text-[11px] leading-snug text-[#a39bb5]">
+                {controlScheme === 'alternative'
+                  ? '⚡ Камера поворачивается просто движением мыши (без зажатия [ЛКМ]), клик [ЛКМ]/[Пробел] сразу бьёт на 30% силы, а при зажатии [ПКМ] камера фиксируется на цели и перо автоматически рисует от жёлтой точки в центре экрана!'
+                  : '🪄 Поворот камеры зажатием [ЛКМ] (или [Q]/[T]), выбор заклинаний колесом мыши или [1–G], рисование рун зажатием [ПКМ] по центру экрана.'}
               </div>
             </div>
 
