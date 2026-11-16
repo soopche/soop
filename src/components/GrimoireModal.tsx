@@ -420,6 +420,9 @@ export const GrimoireModal: React.FC<GrimoireModalProps> = ({
 }) => {
   const [roomInput, setRoomInput] = useState(pvpRoom);
   const [nameInput, setNameInput] = useState(pvpPlayerName);
+  useEffect(() => {
+    setRoomInput(pvpRoom);
+  }, [pvpRoom]);
   const [questCategoryFilter, setQuestCategoryFilter] = useState<'all' | QuestCategory>('all');
   const [craftSectionFilter, setCraftSectionFilter] = useState<CraftSectionFilter>('all_grouped');
   const [selectedRecipe, setSelectedRecipe] = useState<CampfireRecipeId>('health_potion');
@@ -2606,14 +2609,19 @@ export const GrimoireModal: React.FC<GrimoireModalProps> = ({
                     </div>
                     <div>
                       <label htmlFor="pvp-room-code" className="block text-xs text-[#cbd5e1] mb-1">
-                        Код комнаты (введите одинаковый код с другом)
+                        Код комнаты (2 цифры, например 42)
                       </label>
                       <input
                         id="pvp-room-code"
                         type="text"
+                        inputMode="numeric"
+                        maxLength={2}
+                        placeholder="42"
                         value={roomInput}
-                        onChange={(e) => setRoomInput(e.target.value)}
-                        className="w-full px-3 py-2 text-sm bg-[#0d0b14] border border-[#3b3154] rounded text-white font-mono-num"
+                        onChange={(e) =>
+                          setRoomInput(e.target.value.replace(/\D/g, '').slice(0, 2))
+                        }
+                        className="w-24 px-3 py-2 text-sm text-center font-bold bg-[#0d0b14] border border-[#3b3154] rounded text-white font-mono-num"
                       />
                     </div>
                     <div className="flex items-center gap-3 pt-1">
@@ -2622,7 +2630,7 @@ export const GrimoireModal: React.FC<GrimoireModalProps> = ({
                         onClick={() => onJoinPvpRoom(roomInput, nameInput)}
                         className="px-4 py-2 text-xs font-semibold bg-[#d97706] hover:bg-[#f59e0b] text-[#09080d] rounded-lg transition-colors cursor-pointer"
                       >
-                        Подключиться к комнате
+                        Войти
                       </button>
                       <button
                         type="button"
@@ -2638,16 +2646,20 @@ export const GrimoireModal: React.FC<GrimoireModalProps> = ({
                 <div className="md:col-span-6 bg-[#181524] border border-[#2a233d] rounded-xl p-5 space-y-3">
                   <div className="flex items-center justify-between">
                     <h4 className="text-sm font-semibold text-[#f5efe6]">
-                      Комната «{pvpRoom}» · {LABYRINTH_MULTIPLAYER_MODES[labyrinthMultiplayerMode].shortBadge}
+                      {pvpRoom ? `Код: ${pvpRoom}` : 'Комната не выбрана'} · Игроков: {remotePlayers.length + 1} · {LABYRINTH_MULTIPLAYER_MODES[labyrinthMultiplayerMode].shortBadge}
                     </h4>
-                    <span className="text-xs font-mono-num text-[#38bdf8]">
-                      {pvpConnected ? '● Онлайн' : '○ Офлайн'}
-                    </span>
+                    {pvpConnected && (
+                      <span className="text-xs font-mono-num text-[#4ade80]">
+                        ● WebRTC
+                      </span>
+                    )}
                   </div>
 
                   {remotePlayers.length === 0 ? (
                     <p className="text-xs text-[#a39bb5] py-4 leading-relaxed">
-                      Ожидание второго мага в комнате «{pvpRoom}»... Откройте игру у друга с тем же кодом комнаты, чтобы проходить Лабиринт вместе!
+                      {pvpRoom
+                        ? `Передайте код ${pvpRoom} другим игрокам для подключения.`
+                        : 'Создайте комнату в главном меню или введите 2 цифры кода комнаты.'}
                     </p>
                   ) : (
                     <div className="space-y-2">

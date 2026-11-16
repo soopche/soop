@@ -85,19 +85,20 @@ import {
 } from './game/world3d';
 import { GrimoireModal, GrimoireTab, ItemBadgeIcon } from './components/GrimoireModal';
 import {
-  savePlayerProfileToFirestore,
-  loadPlayerProfileFromFirestore,
-  deletePlayerProfileFromFirestore,
-  normalizePlayerProfileKey,
-  getOrCreateGuestDeviceId,
-  connectFirestoreRoom,
-  type FirestoreRoomController,
-  loadLocalCharacters,
-  saveLocalCharacters,
+  connectPeerRoom,
+  generateTwoDigitRoomCode,
   getActiveCharacterIdFromStorage,
-  setActiveCharacterIdInStorage,
+  getOrCreateGuestDeviceId,
+  getOrCreateSessionPlayerId,
+  loadLocalCharacters,
+  normalizePlayerProfileKey,
+  parseTwoDigitRoomCode,
   sanitizeCharacterProfile,
-} from './game/firebase';
+  saveLocalCharacters,
+  setActiveCharacterIdInStorage,
+  type PeerRoomController,
+  type PeerRoomRole,
+} from './game/peerRoom';
 
 const INITIAL_COOLDOWNS: Record<SpellId, number> = {
   incendio: 0,
@@ -131,7 +132,7 @@ export default function App() {
   const canvasMountRef = useRef<HTMLDivElement | null>(null);
   const worldRef = useRef<ArcaneWorldEngine | null>(null);
   const voiceRef = useRef<VoiceSpellRecognizer | null>(null);
-  const roomSessionRef = useRef<FirestoreRoomController | null>(null);
+  const roomSessionRef = useRef<PeerRoomController | null>(null);
 
   const initialAutoStart =
     typeof window !== 'undefined' &&
@@ -174,7 +175,7 @@ export default function App() {
       return 'classic';
     }
   });
-  const [roomInputCode, setRoomInputCode] = useState('arcanum-1');
+  const [roomInputCode, setRoomInputCode] = useState('');
 
   // Player Progression, Inventory & Customization State
   const [playerLevel, setPlayerLevel] = useState(1);
@@ -216,9 +217,6 @@ export default function App() {
   // Multi-Character & Diablo Difficulty State
   const [accountModalOpen, setAccountModalOpen] = useState(false);
   const [newCharNameInput, setNewCharNameInput] = useState('');
-  const [cloudSaveStatus, setCloudSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>(
-    'idle'
-  );
   const [characters, setCharacters] = useState<CharacterProfileData[]>(() => {
     const existing = loadLocalCharacters('local_guest');
     if (existing.length > 0) return existing;
@@ -292,9 +290,9 @@ export default function App() {
     enemiesDefeated: number;
   } | null>(null);
 
-  // Multiplayer Cloud Firestore State
-  const [selfPlayerId] = useState(() => `wiz_${Math.random().toString(36).slice(2, 8)}`);
-  const [pvpRoom, setPvpRoom] = useState('arcanum-1');
+  // Multiplayer PeerJS (WebRTC) State
+  const [selfPlayerId] = useState(() => getOrCreateSessionPlayerId());
+  const [pvpRoom, setPvpRoom] = useState('');
   const [pvpPlayerName, setPvpPlayerName] = useState('Магистр Арканума');
   const [pvpConnected, setPvpConnected] = useState(false);
   const [remotePlayers, setRemotePlayers] = useState<RemotePlayerState[]>([]);
@@ -542,7 +540,7 @@ export default function App() {
     }, 60);
   }, []);
 
-  // Load initial local character on first mount & hydrate latest snapshot from Firestore player_profiles
+  // Load initial local character on first mount
   useEffect(() => {
     const owner = 'local_guest';
     const localChars = loadLocalCharacters(owner);
@@ -550,30 +548,6 @@ export default function App() {
     const chosen = localChars.find((c) => c.id === storedActiveId) || localChars[0];
     if (chosen) {
       applyCharacterProfileToState(chosen);
-      // Hydrate from Firestore player_profiles directly (no Firebase Auth required)
-      void loadPlayerProfileFromFirestore(chosen.id)
-        .then((remote) => {
-          if (!remote) return;
-          const isNewer =
-            remote.updatedAtMs > (chosen.updatedAtMs || 0) ||
-            remote.playerXp > chosen.playerXp ||
-            remote.playerLevel > chosen.playerLevel ||
-            remote.unlockedStageD1 > chosen.unlockedStageD1;
-          if (isNewer) {
-            setCharacters((prev) => {
-              const next = prev.some((c) => c.id === remote.id)
-                ? prev.map((c) => (c.id === remote.id ? remote : c))
-                : [remote, ...prev];
-              saveLocalCharacters(owner, next);
-              return next;
-            });
-            applyCharacterProfileToState(remote);
-          }
-          setCloudSaveStatus('saved');
-        })
-        .catch(() => {
-          setCloudSaveStatus('error');
-        });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -583,7 +557,7 @@ export default function App() {
   const tamedPetRef = useRef(hud.tamedPet);
   tamedPetRef.current = hud.tamedPet;
 
-  // Build current active character profile snapshot & auto-persist to localStorage + Firestore
+  // Build current active character profile snapshot & auto-persist to localStorage
   const buildCurrentCharacterSnapshot = useCallback((): CharacterProfileData => {
     const owner = 'local_guest';
     const currentHighestStage = getUnlockedStageForDifficulty(
@@ -659,14 +633,6 @@ export default function App() {
       setActiveCharacterIdInStorage(owner, updatedSnap.id);
       return nextList;
     });
-
-    setCloudSaveStatus('saving');
-    const timer = window.setTimeout(() => {
-      savePlayerProfileToFirestore(updatedSnap)
-        .then(() => setCloudSaveStatus('saved'))
-        .catch(() => setCloudSaveStatus('error'));
-    }, 550);
-    return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     activeCharacterId,
@@ -686,7 +652,7 @@ export default function App() {
     reagentInventory,
   ]);
 
-  const handleManualSaveCharacter = useCallback(async () => {
+  const handleManualSaveCharacter = useCallback(() => {
     const owner = 'local_guest';
     const snap = buildCurrentCharacterSnapshot();
     setCharacters((prev) => {
@@ -697,19 +663,11 @@ export default function App() {
       saveLocalCharacters(owner, next);
       return next;
     });
-    try {
-      setCloudSaveStatus('saving');
-      await savePlayerProfileToFirestore(snap);
-      setCloudSaveStatus('saved');
-      showToast(`☁️ Профиль «${snap.name}» сохранён в облаке Firestore!`);
-    } catch {
-      setCloudSaveStatus('error');
-      showToast(`💾 Персонаж «${snap.name}» сохранён локально!`);
-    }
+    showToast(`💾 Персонаж «${snap.name}» сохранён локально!`);
   }, [buildCurrentCharacterSnapshot, showToast]);
 
   const handleCreateNewCharacter = useCallback(
-    async (customName?: string) => {
+    (customName?: string) => {
       const owner = 'local_guest';
       const cleanName =
         (customName ?? newCharNameInput).trim() ||
@@ -720,32 +678,6 @@ export default function App() {
         ? `${baseKey}_${Math.random().toString(36).slice(2, 6)}`.slice(0, 64)
         : baseKey;
 
-      // If this exact player name/code already exists in Firestore, load it instead of overwriting progress!
-      if (!existsLocally) {
-        try {
-          const existingRemote = await loadPlayerProfileFromFirestore(cleanName);
-          if (existingRemote) {
-            const hydrated = sanitizeCharacterProfile(
-              { ...existingRemote, ownerId: owner },
-              owner
-            );
-            const nextList = [hydrated, ...characters.filter((c) => c.id !== hydrated.id)];
-            setCharacters(nextList);
-            saveLocalCharacters(owner, nextList);
-            setActiveCharacterIdInStorage(owner, hydrated.id);
-            setNewCharNameInput('');
-            applyCharacterProfileToState(hydrated);
-            setCloudSaveStatus('saved');
-            showToast(
-              `☁️ Загружен профиль «${hydrated.name}» из Firestore (Ур. ${hydrated.playerLevel})!`
-            );
-            return;
-          }
-        } catch {
-          // Proceed with creating a new profile
-        }
-      }
-
       const created = createDefaultCharacterProfile(owner, cleanName, targetId);
       const nextList = [created, ...characters];
       setCharacters(nextList);
@@ -753,50 +685,36 @@ export default function App() {
       setActiveCharacterIdInStorage(owner, created.id);
       setNewCharNameInput('');
       applyCharacterProfileToState(created);
-      try {
-        setCloudSaveStatus('saving');
-        await savePlayerProfileToFirestore(created);
-        setCloudSaveStatus('saved');
-      } catch {
-        setCloudSaveStatus('error');
-      }
-      showToast(`✨ Создан новый персонаж: «${created.name}» (Ур. 1) и сохранён в Firestore!`);
+      showToast(`✨ Создан новый персонаж: «${created.name}» (Ур. 1)!`);
     },
     [newCharNameInput, characters, applyCharacterProfileToState, showToast]
   );
 
   const handleLoadCharacterByNameOrCode = useCallback(
-    async (customNameOrCode?: string) => {
+    (customNameOrCode?: string) => {
       const owner = 'local_guest';
       const queryInput = (customNameOrCode ?? newCharNameInput).trim();
       if (!queryInput) {
-        showToast('Введите имя или код игрока для загрузки из Firestore.');
+        showToast('Введите имя или код персонажа.');
         return;
       }
-      try {
-        const found = await loadPlayerProfileFromFirestore(queryInput);
-        if (!found) {
-          showToast(`Профиль «${queryInput}» не найден в Firestore — нажмите «+ Добавить персонажа».`);
-          return;
-        }
-        const hydrated = sanitizeCharacterProfile({ ...found, ownerId: owner }, owner);
-        setCharacters((prev) => {
-          const next = [hydrated, ...prev.filter((c) => c.id !== hydrated.id)];
-          saveLocalCharacters(owner, next);
-          return next;
-        });
-        setActiveCharacterIdInStorage(owner, hydrated.id);
-        setNewCharNameInput('');
-        applyCharacterProfileToState(hydrated);
-        setCloudSaveStatus('saved');
-        showToast(
-          `☁️ Профиль «${hydrated.name}» (Ур. ${hydrated.playerLevel}) загружен из Firestore!`
-        );
-      } catch {
-        showToast('⚠️ Не удалось загрузить профиль из Firestore.');
+      const normalizedKey = normalizePlayerProfileKey(queryInput);
+      const found = characters.find(
+        (c) =>
+          c.id === queryInput ||
+          c.id === normalizedKey ||
+          c.name.trim().toLowerCase() === queryInput.toLowerCase()
+      );
+      if (!found) {
+        showToast(`Профиль «${queryInput}» не найден — нажмите «+ Добавить персонажа».`);
+        return;
       }
+      setActiveCharacterIdInStorage(owner, found.id);
+      setNewCharNameInput('');
+      applyCharacterProfileToState(found);
+      showToast(`🧙 Профиль «${found.name}» (Ур. ${found.playerLevel}) загружен!`);
     },
-    [newCharNameInput, applyCharacterProfileToState, showToast]
+    [newCharNameInput, characters, applyCharacterProfileToState, showToast]
   );
 
   const handleSwitchCharacter = useCallback(
@@ -806,19 +724,6 @@ export default function App() {
       if (!target) return;
       setActiveCharacterIdInStorage(owner, target.id);
       applyCharacterProfileToState(target);
-      void loadPlayerProfileFromFirestore(target.id)
-        .then((remote) => {
-          if (remote && remote.updatedAtMs > (target.updatedAtMs || 0)) {
-            const merged = sanitizeCharacterProfile({ ...remote, ownerId: owner }, owner);
-            setCharacters((prev) => {
-              const next = prev.map((c) => (c.id === merged.id ? merged : c));
-              saveLocalCharacters(owner, next);
-              return next;
-            });
-            applyCharacterProfileToState(merged);
-          }
-        })
-        .catch(() => {});
       showToast(
         `🧙 Выбран персонаж: «${target.name}» (Ур. ${target.playerLevel}, открыт Этап ${getUnlockedStageForDifficulty(
           target,
@@ -830,7 +735,7 @@ export default function App() {
   );
 
   const handleDeleteCharacter = useCallback(
-    async (charId: string) => {
+    (charId: string) => {
       const owner = 'local_guest';
       const target = characters.find((c) => c.id === charId);
       const remaining = characters.filter((c) => c.id !== charId);
@@ -848,11 +753,6 @@ export default function App() {
       if (activeCharacterId === charId) {
         setActiveCharacterIdInStorage(owner, nextList[0].id);
         applyCharacterProfileToState(nextList[0]);
-      }
-      try {
-        await deletePlayerProfileFromFirestore(charId);
-      } catch {
-        // Ignore delete errors if offline
       }
       showToast(`🗑️ Персонаж «${target?.name || charId}» удалён!`);
     },
@@ -1088,17 +988,28 @@ export default function App() {
     [recordQuestEvents, showToast]
   );
 
-  // Connect to Cloud Firestore Real-Time Room for Multiplayer Co-op & PvP Duels
+  // Connect to PeerJS (WebRTC) Room for Multiplayer Co-op & PvP Duels
   const connectMultiplayerRoom = useCallback(
-    (roomName: string, wizardName: string) => {
+    (roomCode: string, wizardName: string, role: PeerRoomRole = 'guest') => {
       if (typeof window === 'undefined') return;
+      const parsedCode = parseTwoDigitRoomCode(roomCode);
+      if (!parsedCode) {
+        showToast('Введите 2 цифры кода комнаты (10–99)');
+        return;
+      }
+
       if (roomSessionRef.current) {
         roomSessionRef.current.dispose();
         roomSessionRef.current = null;
       }
 
-      const controller = connectFirestoreRoom({
-        roomName,
+      setPvpRoom(parsedCode);
+      setRemotePlayers([]);
+      setPvpConnected(false);
+
+      const controller = connectPeerRoom({
+        role,
+        roomCode: parsedCode,
         playerId: stateRef.current.selfPlayerId,
         playerName: wizardName,
         maxHp: worldRef.current?.maxHp || 100,
@@ -1106,8 +1017,14 @@ export default function App() {
         staffId: stateRef.current.equippedStaffId,
         labyrinthMode: stateRef.current.labyrinthMultiplayerMode,
         stage: worldRef.current?.labyrinthStage || 1,
+        onRoomCodeResolved: (resolved) => {
+          setPvpRoom(resolved);
+        },
         onConnectedChange: (connected) => {
           setPvpConnected(connected);
+        },
+        onConnectionError: (msg) => {
+          showToast(msg);
         },
         onPlayersSync: (list) => {
           const others = list.filter((p) => p.id !== stateRef.current.selfPlayerId);
@@ -1454,8 +1371,6 @@ export default function App() {
       },
     });
     voiceRef.current = recognizer;
-
-    connectMultiplayerRoom('arcanum-1', stateRef.current.pvpPlayerName || 'Магистр Арканума');
 
     const handleBeforeUnload = () => {
       roomSessionRef.current?.dispose();
@@ -2972,76 +2887,75 @@ export default function App() {
               </div>
             </div>
 
-            {/* CO-OP ROOM CREATION & SHARED LAUNCH ON MAIN TITLE SCREEN */}
+            {/* COMPACT SINGLE-LINE CO-OP BAR (PeerJS WebRTC, 2-Digit Room Code) */}
             <div
               data-testid="title-coop-room-panel"
-              className="p-3 rounded-xl border border-[#22c55e]/60 bg-[#101c18]/95 space-y-2 shadow-xl"
+              className="px-3 py-2 rounded-xl border border-[#22c55e]/60 bg-[#101c18]/95 flex flex-wrap items-center gap-2 shadow-xl"
             >
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-xs font-bold text-[#bbf7d0]">
-                  🤝 Кооперативная Комната (Общие враги, общие стены макс. 12):
-                </span>
-                <span className="text-[11px] font-mono-num text-[#4ade80]">
-                  Комната: <strong>{pvpRoom}</strong> · Игроков: <strong>{remotePlayers.length + 1}</strong> (Вы: <strong>{pvpPlayerName}</strong>
-                  {remotePlayers.length > 0
-                    ? `, ${remotePlayers.map((p) => p.name).join(', ')}`
-                    : ''}
-                  )
-                </span>
-              </div>
+              <button
+                type="button"
+                data-testid="title-create-room-btn"
+                onClick={() => {
+                  const code = generateTwoDigitRoomCode();
+                  setPvpRoom(code);
+                  connectMultiplayerRoom(code, pvpPlayerName, 'host');
+                }}
+                className="px-3 py-1.5 rounded-lg bg-[#15803d] hover:bg-[#16a34a] text-white text-xs font-bold cursor-pointer shrink-0"
+              >
+                Создать комнату
+              </button>
 
-              <div className="flex flex-wrap items-center gap-2">
+              {pvpRoom && (
+                <>
+                  <span
+                    data-testid="title-room-status"
+                    className="text-sm font-extrabold font-mono-num text-[#4ade80] tracking-wide px-1.5"
+                  >
+                    Код: {pvpRoom} | Игроков: {remotePlayers.length + 1}
+                  </span>
+                  <button
+                    type="button"
+                    data-testid="title-launch-room-btn"
+                    onClick={() => {
+                      roomSessionRef.current?.sendStartGame(1);
+                      handleStartGameWithMode('labyrinth', 'shared', 1);
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-[#22c55e] hover:bg-[#4ade80] text-[#09080d] text-xs font-extrabold cursor-pointer shrink-0"
+                  >
+                    Начать игру
+                  </button>
+                </>
+              )}
+
+              <div className="flex items-center gap-1.5 ml-auto">
                 <input
                   type="text"
+                  inputMode="numeric"
                   value={roomInputCode}
-                  onChange={(e) => setRoomInputCode(e.target.value)}
-                  placeholder="Код комнаты..."
-                  maxLength={24}
+                  onChange={(e) =>
+                    setRoomInputCode(e.target.value.replace(/\D/g, '').slice(0, 2))
+                  }
+                  placeholder="42"
+                  maxLength={2}
+                  aria-label="Код комнаты (2 цифры)"
                   data-testid="title-room-code-input"
-                  className="w-36 px-2.5 py-1.5 rounded-lg bg-[#090d0b] border border-[#22c55e]/60 text-xs text-white font-mono-num focus:outline-none focus:border-[#4ade80]"
+                  className="w-14 px-2 py-1.5 rounded-lg bg-[#090d0b] border border-[#22c55e]/60 text-xs text-center font-bold text-white font-mono-num focus:outline-none focus:border-[#4ade80]"
                 />
-                <button
-                  type="button"
-                  data-testid="title-create-room-btn"
-                  onClick={() => {
-                    const newCode = `room-${Math.floor(100 + Math.random() * 900)}`;
-                    setRoomInputCode(newCode);
-                    setPvpRoom(newCode);
-                    connectMultiplayerRoom(newCode, pvpPlayerName);
-                    showToast(`🏠 Создана комната «${newCode}»! Скажите код другу и запускайте игру.`);
-                  }}
-                  className="px-2.5 py-1.5 rounded-lg bg-[#15803d] hover:bg-[#16a34a] text-white text-xs font-bold cursor-pointer"
-                >
-                  + Создать комнату
-                </button>
                 <button
                   type="button"
                   data-testid="title-join-room-btn"
                   onClick={() => {
-                    const clean = roomInputCode.trim() || 'arcanum-1';
-                    setPvpRoom(clean);
-                    connectMultiplayerRoom(clean, pvpPlayerName);
-                    showToast(`🔗 Вы вошли в комнату «${clean}» как «${pvpPlayerName}»!`);
-                  }}
-                  className="px-2.5 py-1.5 rounded-lg bg-[#1e293b] hover:bg-[#334155] border border-[#38bdf8] text-[#bae6fd] text-xs font-bold cursor-pointer"
-                >
-                  Войти по коду
-                </button>
-                <button
-                  type="button"
-                  data-testid="title-launch-room-btn"
-                  onClick={() => {
-                    const clean = roomInputCode.trim() || pvpRoom || 'arcanum-1';
-                    if (clean !== pvpRoom || !roomSessionRef.current) {
-                      setPvpRoom(clean);
-                      connectMultiplayerRoom(clean, pvpPlayerName);
+                    const parsed = parseTwoDigitRoomCode(roomInputCode);
+                    if (!parsed) {
+                      showToast('Введите 2 цифры кода комнаты (10–99)');
+                      return;
                     }
-                    roomSessionRef.current?.sendStartGame(1);
-                    handleStartGameWithMode('labyrinth', 'shared', 1);
+                    setPvpRoom(parsed);
+                    connectMultiplayerRoom(parsed, pvpPlayerName, 'guest');
                   }}
-                  className="px-3 py-1.5 rounded-lg bg-[#22c55e] hover:bg-[#4ade80] text-[#09080d] text-xs font-extrabold cursor-pointer ml-auto"
+                  className="px-3 py-1.5 rounded-lg bg-[#1e293b] hover:bg-[#334155] border border-[#38bdf8] text-[#bae6fd] text-xs font-bold cursor-pointer shrink-0"
                 >
-                  ▶ Запустить игру вместе
+                  Войти
                 </button>
               </div>
             </div>
@@ -4251,10 +4165,14 @@ export default function App() {
           onSelectLabyrinthMultiplayerMode={handleSelectLabyrinthMultiplayerMode}
           remotePlayers={remotePlayers}
           onJoinPvpRoom={(room, name) => {
-            setPvpRoom(room);
+            const parsed = parseTwoDigitRoomCode(room);
+            if (!parsed) {
+              showToast('Введите 2 цифры кода комнаты (10–99)');
+              return;
+            }
+            setPvpRoom(parsed);
             setPvpPlayerName(name);
-            connectMultiplayerRoom(room, name);
-            showToast(`Подключено к «${room}»`);
+            connectMultiplayerRoom(parsed, name, 'guest');
           }}
           onResetPvpDuel={() => {
             roomSessionRef.current?.sendDuelReset();
@@ -4443,7 +4361,9 @@ export default function App() {
                   🌐 Режим Коопа и Маги
                 </span>
                 <span className="font-mono-num text-[#4ade80] font-bold">
-                  👥 Магов в комнате «{pvpRoom}»: {remotePlayers.length + 1}
+                  {pvpRoom
+                    ? `Код: ${pvpRoom} | Игроков: ${remotePlayers.length + 1}`
+                    : `Игроков: ${remotePlayers.length + 1}`}
                 </span>
               </div>
               <button
@@ -4646,14 +4566,14 @@ export default function App() {
               </button>
             </div>
 
-            {/* Direct Cloud Firestore Save Section (No Auth Popup Required) */}
+            {/* Local Profile Persistence Section */}
             <div className="p-4 rounded-xl bg-[#1b1729] border border-[#3b3154] flex flex-wrap items-center justify-between gap-3">
               <div className="space-y-1">
                 <div className="text-sm font-bold text-white">
-                  ☁️ Облачное сохранение Firestore ({cloudSaveStatus === 'saved' ? 'Синхронизировано' : cloudSaveStatus === 'saving' ? 'Сохранение...' : 'Локальный кэш + Firestore'})
+                  💾 Локальное сохранение профилей
                 </div>
                 <div className="text-xs text-[#a39bb5]">
-                  Прогресс привязан к имени/коду профиля и автоматически сохраняется в Cloud Firestore без входа в Google.
+                  Прогресс привязан к имени/коду персонажа и сохраняется автоматически в вашем браузере.
                 </div>
               </div>
               <div className="flex items-center gap-2">
@@ -4696,7 +4616,7 @@ export default function App() {
                   onClick={() => handleLoadCharacterByNameOrCode()}
                   className="px-3 py-2 rounded-lg bg-[#1e293b] hover:bg-[#334155] border border-[#38bdf8] text-[#bae6fd] text-xs font-bold cursor-pointer"
                 >
-                  ☁️ Загрузить по имени/коду
+                  🔎 Найти по имени/коду
                 </button>
               </div>
 
