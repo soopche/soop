@@ -1,14 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  PEER_ROOM_PREFIX,
+  MQTT_BROKERS,
+  MQTT_TOPIC_ROOT,
+  PLAYER_HEARTBEAT_MS,
+  PLAYER_INACTIVITY_TIMEOUT_MS,
   generateTwoDigitRoomCode,
   getOrCreateSessionPlayerId,
+  getRoomEventsTopic,
+  getRoomPlayerTopic,
+  getRoomWildcardTopic,
   normalizePlayerProfileKey,
   parseTwoDigitRoomCode,
+  pruneInactivePlayers,
   sanitizeCharacterProfile,
-  toPeerRoomId,
-} from './peerRoom';
+  type PlayerWireState,
+} from './mqttRoom';
 
 test('generateTwoDigitRoomCode always returns strictly 2 digits from 10 to 99', () => {
   for (let i = 0; i < 150; i++) {
@@ -29,14 +36,55 @@ test('parseTwoDigitRoomCode extracts valid 2-digit codes and rejects invalid inp
   assert.equal(parseTwoDigitRoomCode('room'), null);
 });
 
-test('toPeerRoomId prefixes 2-digit room codes with vox-arcanum-net-', () => {
-  assert.equal(PEER_ROOM_PREFIX, 'vox-arcanum-net-');
-  assert.equal(toPeerRoomId('42'), 'vox-arcanum-net-42');
-  assert.equal(toPeerRoomId('75'), 'vox-arcanum-net-75');
-  assert.throws(() => toPeerRoomId('4'));
+test('MQTT topics follow vox-arcanum-game-2026/room/XX schema and brokers include EMQX + HiveMQ', () => {
+  assert.equal(MQTT_TOPIC_ROOT, 'vox-arcanum-game-2026/room');
+  assert.equal(MQTT_BROKERS[0], 'wss://broker.emqx.io:8084/mqtt');
+  assert.equal(MQTT_BROKERS[1], 'wss://broker.hivemq.com:8884/mqtt');
+  assert.equal(PLAYER_HEARTBEAT_MS, 500);
+  assert.equal(PLAYER_INACTIVITY_TIMEOUT_MS, 3000);
+
+  assert.equal(getRoomWildcardTopic('42'), 'vox-arcanum-game-2026/room/42/#');
+  assert.equal(
+    getRoomPlayerTopic('42', 'wiz_abc123'),
+    'vox-arcanum-game-2026/room/42/player/wiz_abc123'
+  );
+  assert.equal(getRoomEventsTopic('42'), 'vox-arcanum-game-2026/room/42/events');
+  assert.throws(() => getRoomWildcardTopic('4'));
 });
 
-test('getOrCreateSessionPlayerId persists per sessionStorage and isolates tabs', () => {
+test('pruneInactivePlayers removes stale remote players after 3s timeout while keeping self', () => {
+  const basePlayer = (id: string, lastSeenMs: number): PlayerWireState => ({
+    id,
+    name: id,
+    x: 0,
+    y: 0,
+    z: 0,
+    rotY: 0,
+    hp: 100,
+    maxHp: 100,
+    level: 1,
+    staffId: 'wand_ollivander',
+    shieldActive: false,
+    wins: 0,
+    isDead: false,
+    lastSeenMs,
+  });
+
+  const map = new Map<string, PlayerWireState>([
+    ['self_1', basePlayer('self_1', 1000)],
+    ['fresh_2', basePlayer('fresh_2', 9500)],
+    ['stale_3', basePlayer('stale_3', 5000)],
+  ]);
+
+  const changed = pruneInactivePlayers(map, 'self_1', 10000, 3000);
+  assert.equal(changed, true);
+  assert.equal(map.has('self_1'), true);
+  assert.equal(map.has('fresh_2'), true);
+  assert.equal(map.has('stale_3'), false);
+  assert.equal(pruneInactivePlayers(map, 'self_1', 10000, 3000), false);
+});
+
+test('getOrCreateSessionPlayerId persists per sessionStorage and isolates tabs/devices', () => {
   const createMockStorage = () => {
     const map = new Map<string, string>();
     return {
@@ -59,7 +107,7 @@ test('getOrCreateSessionPlayerId persists per sessionStorage and isolates tabs',
   assert.match(idB1, /^wiz_[a-zA-Z0-9_\-]+$/);
 });
 
-test('normalizePlayerProfileKey produces stable safe IDs and sanitizeCharacterProfile clamps fields', () => {
+test('normalizePlayerProfileKey and sanitizeCharacterProfile produce valid profiles', () => {
   const key1 = normalizePlayerProfileKey('Архимаг Вокс');
   const key2 = normalizePlayerProfileKey('  архимаг вокс ');
   assert.equal(key1, key2);

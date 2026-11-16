@@ -1,4 +1,4 @@
-import Peer, { type DataConnection } from 'peerjs';
+import mqtt, { type MqttClient } from 'mqtt';
 import {
   CHARACTER_ID_MAX_LENGTH,
   CHARACTER_NAME_MAX_LENGTH,
@@ -16,10 +16,17 @@ import {
 } from './spells';
 import type { RemotePlayerState, SharedWorldEventPayload } from './world3d';
 
-export const PEER_ROOM_PREFIX = 'vox-arcanum-net-';
+export const MQTT_BROKERS = [
+  'wss://broker.emqx.io:8084/mqtt',
+  'wss://broker.hivemq.com:8884/mqtt',
+] as const;
+
+export const MQTT_TOPIC_ROOT = 'vox-arcanum-game-2026/room';
+export const PLAYER_HEARTBEAT_MS = 500;
+export const PLAYER_INACTIVITY_TIMEOUT_MS = 3000;
 
 // ============================================================================
-// TWO-DIGIT ROOM CODE & SESSION PLAYER ID HELPERS
+// TWO-DIGIT ROOM CODE, TOPIC & SESSION PLAYER ID HELPERS
 // ============================================================================
 export function generateTwoDigitRoomCode(): string {
   return String(Math.floor(10 + Math.random() * 90));
@@ -31,12 +38,29 @@ export function parseTwoDigitRoomCode(raw: string): string | null {
   return digits;
 }
 
-export function toPeerRoomId(twoDigitCode: string): string {
+export function getRoomWildcardTopic(twoDigitCode: string): string {
   const parsed = parseTwoDigitRoomCode(twoDigitCode);
   if (!parsed) {
     throw new Error(`Invalid two-digit room code: "${twoDigitCode}"`);
   }
-  return `${PEER_ROOM_PREFIX}${parsed}`;
+  return `${MQTT_TOPIC_ROOT}/${parsed}/#`;
+}
+
+export function getRoomPlayerTopic(twoDigitCode: string, playerId: string): string {
+  const parsed = parseTwoDigitRoomCode(twoDigitCode);
+  if (!parsed) {
+    throw new Error(`Invalid two-digit room code: "${twoDigitCode}"`);
+  }
+  const safeId = (playerId || 'anon').replace(/[^a-zA-Z0-9_\-]/g, '').slice(0, 64) || 'anon';
+  return `${MQTT_TOPIC_ROOT}/${parsed}/player/${safeId}`;
+}
+
+export function getRoomEventsTopic(twoDigitCode: string): string {
+  const parsed = parseTwoDigitRoomCode(twoDigitCode);
+  if (!parsed) {
+    throw new Error(`Invalid two-digit room code: "${twoDigitCode}"`);
+  }
+  return `${MQTT_TOPIC_ROOT}/${parsed}/events`;
 }
 
 const SESSION_PLAYER_ID_KEY = 'vox_arcanum_session_player_id_v1';
@@ -66,8 +90,33 @@ export function getOrCreateSessionPlayerId(
   }
 }
 
+export interface PlayerWireState extends RemotePlayerState {
+  isDead: boolean;
+  lastSeenMs: number;
+}
+
+/**
+ * Pure helper to prune players who have not sent a heartbeat within timeoutMs
+ * (always preserving selfId).
+ */
+export function pruneInactivePlayers(
+  players: Map<string, PlayerWireState>,
+  selfId: string,
+  nowMs: number,
+  timeoutMs = PLAYER_INACTIVITY_TIMEOUT_MS
+): boolean {
+  let changed = false;
+  for (const [pid, p] of players.entries()) {
+    if (pid !== selfId && nowMs - p.lastSeenMs > timeoutMs) {
+      players.delete(pid);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 // ============================================================================
-// LOCAL CHARACTER PROFILE STORAGE & SANITIZATION (NO FIREBASE)
+// LOCAL CHARACTER PROFILE STORAGE & SANITIZATION
 // ============================================================================
 const LOCAL_CHARS_KEY_PREFIX = 'vox_arcanum_characters_v1_';
 const LOCAL_ACTIVE_CHAR_KEY_PREFIX = 'vox_arcanum_active_char_v1_';
@@ -340,12 +389,9 @@ export function setActiveCharacterIdInStorage(ownerId: string, characterId: stri
 }
 
 // ============================================================================
-// REAL-TIME PEERJS (WEBRTC) MULTIPLAYER CONTROLLER
+// REAL-TIME MQTT OVER WEBSOCKETS MULTIPLAYER CONTROLLER
 // ============================================================================
-export type PeerRoomRole = 'host' | 'guest';
-
-export interface PeerRoomConnectionOptions {
-  role: PeerRoomRole;
+export interface MqttRoomConnectionOptions {
   roomCode: string; // Strictly 2 digits ('10'..'99')
   playerId: string;
   playerName: string;
@@ -354,7 +400,6 @@ export interface PeerRoomConnectionOptions {
   staffId: string;
   labyrinthMode: LabyrinthMultiplayerMode;
   stage: LabyrinthStageId;
-  onRoomCodeResolved?: (resolvedTwoDigitCode: string) => void;
   onConnectedChange: (connected: boolean) => void;
   onConnectionError?: (message: string) => void;
   onPlayersSync: (players: RemotePlayerState[]) => void;
@@ -419,9 +464,9 @@ export interface PeerRoomConnectionOptions {
   onDuelReset: () => void;
 }
 
-export interface PeerRoomController {
+export interface MqttRoomController {
   roomCode: string;
-  role: PeerRoomRole;
+  brokerUrl: string;
   sendMove: (pos: {
     x: number;
     y: number;
@@ -484,11 +529,6 @@ export interface PeerRoomController {
   dispose: () => void;
 }
 
-interface PlayerWireState extends RemotePlayerState {
-  isDead: boolean;
-  lastSeenMs: number;
-}
-
 interface EnemyWireState {
   id: string;
   stage: number;
@@ -501,20 +541,29 @@ interface EnemyWireState {
   killed: boolean;
 }
 
-type PeerMessage =
-  | { type: 'hello'; player: PlayerWireState }
+type PlayerTopicPayload =
+  | {
+      type: 'state';
+      join?: boolean;
+      player: RemotePlayerState & { isDead: boolean };
+    }
+  | {
+      type: 'leave';
+      playerId: string;
+    };
+
+type RoomEventMessage =
   | {
       type: 'init_state';
-      roomCode: string;
+      eventId: string;
+      targetId: string;
+      senderId: string;
       labyrinthMode: LabyrinthMultiplayerMode;
       labyrinthStage: number;
       stageEpoch: number;
-      players: PlayerWireState[];
       enemies: EnemyWireState[];
       worldEvents: Array<{ eventId: string; payload: SharedWorldEventPayload }>;
     }
-  | { type: 'players_sync'; players: PlayerWireState[] }
-  | { type: 'move'; player: PlayerWireState }
   | {
       type: 'spell_cast';
       eventId: string;
@@ -581,9 +630,16 @@ type PeerMessage =
       senderId: string;
       payload: SharedWorldEventPayload;
     }
-  | { type: 'set_mode'; labyrinthMode: LabyrinthMultiplayerMode; stage: number }
+  | {
+      type: 'set_mode';
+      eventId: string;
+      senderId: string;
+      labyrinthMode: LabyrinthMultiplayerMode;
+      stage: number;
+    }
   | {
       type: 'start_game';
+      eventId: string;
       roomCode: string;
       stage: 1 | 2 | 3 | 4 | 5;
       hostId: string;
@@ -591,33 +647,57 @@ type PeerMessage =
     }
   | {
       type: 'stage_advance';
+      eventId: string;
       stage: number;
       victory: boolean;
       reset: boolean;
       senderId: string;
       stageEpoch: number;
     }
-  | { type: 'player_died'; playerId: string; stage: number }
-  | { type: 'player_respawn'; playerId: string; maxHp: number }
-  | { type: 'all_dead_reset'; stage: 1 | 2 | 3 | 4 | 5; stageEpoch: number }
-  | { type: 'duel_reset' };
+  | {
+      type: 'player_died';
+      eventId: string;
+      playerId: string;
+      stage: number;
+    }
+  | {
+      type: 'player_respawn';
+      eventId: string;
+      playerId: string;
+      maxHp: number;
+    }
+  | {
+      type: 'all_dead_reset';
+      eventId: string;
+      stage: 1 | 2 | 3 | 4 | 5;
+      stageEpoch: number;
+    }
+  | {
+      type: 'duel_reset';
+      eventId: string;
+      senderId: string;
+    };
 
 function toStageNum(n: unknown): 1 | 2 | 3 | 4 | 5 {
   return n === 2 ? 2 : n === 3 ? 3 : n === 4 ? 4 : n === 5 ? 5 : 1;
 }
 
-const PEER_ICE_CONFIG: RTCConfiguration = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-  ],
-};
-
-export function connectPeerRoom(opts: PeerRoomConnectionOptions): PeerRoomController {
-  let activeCode = parseTwoDigitRoomCode(opts.roomCode) || generateTwoDigitRoomCode();
+export function connectMqttRoom(opts: MqttRoomConnectionOptions): MqttRoomController {
+  const activeCode = parseTwoDigitRoomCode(opts.roomCode) || generateTwoDigitRoomCode();
   const selfId = opts.playerId;
 
+  const wildcardTopic = getRoomWildcardTopic(activeCode);
+  const selfPlayerTopic = getRoomPlayerTopic(activeCode, selfId);
+  const eventsTopic = getRoomEventsTopic(activeCode);
+  const playerTopicPrefix = `${MQTT_TOPIC_ROOT}/${activeCode}/player/`;
+
   let disposed = false;
+  let brokerIndex = 0;
+  let currentBrokerUrl: string = MQTT_BROKERS[0];
+  let client: MqttClient | null = null;
+  let connectWatchdogTimer: number | null = null;
+  let isConnected = false;
+
   let currentLabyrinthMode: LabyrinthMultiplayerMode = opts.labyrinthMode;
   let currentLabyrinthStage: number = opts.stage;
   let currentStageEpoch = 1;
@@ -639,23 +719,18 @@ export function connectPeerRoom(opts: PeerRoomConnectionOptions): PeerRoomContro
     lastSeenMs: Date.now(),
   };
 
-  // Authoritative host state (also mirrors synced state on guest)
   const playersMap = new Map<string, PlayerWireState>();
   playersMap.set(selfId, selfPlayer);
   const enemiesMap = new Map<string, EnemyWireState>();
   const worldEventsHistory = new Map<string, { eventId: string; payload: SharedWorldEventPayload }>();
-  const guestConnections = new Map<DataConnection, string | null>();
-  let hostConnection: DataConnection | null = null;
-  let peerInstance: Peer | null = null;
-  let hostRetryCount = 0;
-  const triedCodes = new Set<string>([activeCode]);
 
   const seenEventIds = new Set<string>();
   const seenDeadIds = new Set<string>();
   const lastPropSyncTimes = new Map<string, number>();
-  let lastMoveSentAt = 0;
+  let lastMovePublishedAt = 0;
   let lastMoveSignature = '';
   let lastEnemySyncAt = 0;
+  let lastHeartbeatPublishedAt = 0;
 
   const rememberId = (id: string): boolean => {
     if (!id) return false;
@@ -668,7 +743,12 @@ export function connectPeerRoom(opts: PeerRoomConnectionOptions): PeerRoomContro
     return false;
   };
 
-  const emitPlayersSyncLocally = () => {
+  const isCoordinator = (): boolean => {
+    const ids = Array.from(playersMap.keys()).sort();
+    return ids.length === 0 || ids[0] === selfId;
+  };
+
+  const emitPlayersSync = () => {
     if (disposed) return;
     const list = Array.from(playersMap.values());
     const nextDead = new Set<string>();
@@ -688,29 +768,27 @@ export function connectPeerRoom(opts: PeerRoomConnectionOptions): PeerRoomContro
     );
   };
 
-  const broadcastFromHost = (msg: PeerMessage, excludeConn?: DataConnection) => {
-    for (const [conn] of guestConnections.entries()) {
-      if (conn !== excludeConn && conn.open) {
-        try {
-          conn.send(msg);
-        } catch {
-          // Ignore broken pipe; close event cleans it up
-        }
-      }
+  const publishJson = (topic: string, data: unknown) => {
+    if (disposed || !client || !client.connected) return;
+    try {
+      client.publish(topic, JSON.stringify(data), { qos: 0, retain: false });
+    } catch {
+      // Ignore transient publish failure while reconnecting
     }
   };
 
-  const sendToHostOrBroadcast = (msg: PeerMessage) => {
-    if (disposed) return;
-    if (opts.role === 'host') {
-      broadcastFromHost(msg);
-    } else if (hostConnection && hostConnection.open) {
-      try {
-        hostConnection.send(msg);
-      } catch {
-        // Ignore transient write errors
-      }
-    }
+  const publishSelfState = (isJoin = false) => {
+    const now = Date.now();
+    selfPlayer.lastSeenMs = now;
+    playersMap.set(selfId, selfPlayer);
+    lastHeartbeatPublishedAt = now;
+    const { lastSeenMs: _omit, ...wirePlayer } = selfPlayer;
+    const payload: PlayerTopicPayload = {
+      type: 'state',
+      ...(isJoin ? { join: true } : {}),
+      player: wirePlayer,
+    };
+    publishJson(selfPlayerTopic, payload);
   };
 
   const resetEpochState = (nextEpoch: number) => {
@@ -724,286 +802,80 @@ export function connectPeerRoom(opts: PeerRoomConnectionOptions): PeerRoomContro
     seenDeadIds.clear();
   };
 
-  const handleHostIncomingMessage = (msg: PeerMessage, fromConn: DataConnection) => {
-    if (disposed) return;
+  const handlePlayerTopicMessage = (topicPlayerId: string, raw: unknown) => {
+    if (!raw || typeof raw !== 'object' || !('type' in raw)) return;
+    const msg = raw as PlayerTopicPayload;
 
-    switch (msg.type) {
-      case 'hello':
-      case 'move': {
-        const incoming = { ...msg.player, lastSeenMs: Date.now() };
-        guestConnections.set(fromConn, incoming.id);
-        playersMap.set(incoming.id, incoming);
-        if (msg.type === 'hello') {
-          if (fromConn.open) {
-            fromConn.send({
-              type: 'init_state',
-              roomCode: activeCode,
-              labyrinthMode: currentLabyrinthMode,
-              labyrinthStage: currentLabyrinthStage,
-              stageEpoch: currentStageEpoch,
-              players: Array.from(playersMap.values()),
-              enemies: Array.from(enemiesMap.values()),
-              worldEvents: Array.from(worldEventsHistory.values()),
-            } satisfies PeerMessage);
-          }
-        }
-        emitPlayersSyncLocally();
-        broadcastFromHost({
-          type: 'players_sync',
-          players: Array.from(playersMap.values()),
-        });
-        break;
+    if (msg.type === 'leave') {
+      const leaverId = msg.playerId || topicPlayerId;
+      if (!leaverId || leaverId === selfId) return;
+      if (playersMap.delete(leaverId)) {
+        emitPlayersSync();
       }
+      return;
+    }
 
-      case 'spell_cast': {
-        if (rememberId(msg.eventId)) return;
-        opts.onSpellSpawned({
-          casterId: msg.casterId,
-          spellId: msg.spellId,
-          power: msg.power,
-          accuracy: msg.accuracy,
-          origin: msg.origin,
-          direction: msg.direction,
-          color: msg.color,
-        });
-        broadcastFromHost(msg, fromConn);
-        break;
-      }
+    if (msg.type === 'state' && msg.player) {
+      const incomingId = msg.player.id || topicPlayerId;
+      if (!incomingId || incomingId === selfId) return;
+      const wasKnown = playersMap.has(incomingId);
+      const nextPlayer: PlayerWireState = {
+        ...msg.player,
+        id: incomingId,
+        lastSeenMs: Date.now(),
+      };
+      playersMap.set(incomingId, nextPlayer);
+      emitPlayersSync();
 
-      case 'player_hit': {
-        if (rememberId(msg.eventId)) return;
-        if (msg.targetId === selfId) {
-          opts.onPlayerDamaged({
-            targetId: msg.targetId,
-            attackerId: msg.attackerId,
-            attackerName: msg.attackerName,
-            damage: msg.damage,
-          });
-        }
-        broadcastFromHost(msg, fromConn);
-        break;
-      }
-
-      case 'enemy_hit': {
-        if (currentLabyrinthMode !== 'shared') return;
-        if (msg.stageEpoch !== currentStageEpoch) return;
-        if (rememberId(msg.hitId)) return;
-
-        const existing = enemiesMap.get(msg.enemyId);
-        if (existing && (existing.killed || existing.hp <= 0)) return;
-        const prevHp = existing ? existing.hp : msg.maxHp;
-        const nextHp = Math.max(0, prevHp - msg.damage);
-        const killed = nextHp <= 0;
-
-        enemiesMap.set(msg.enemyId, {
-          id: msg.enemyId,
-          stage: msg.stage,
-          hp: nextHp,
-          maxHp: msg.maxHp,
-          x: msg.x,
-          y: msg.y,
-          z: msg.z,
-          state: killed ? 'ko' : 'seek',
-          killed,
-        });
-
-        const damagedMsg: PeerMessage = {
-          type: 'enemy_damaged',
-          hitId: msg.hitId,
-          enemyId: msg.enemyId,
-          stage: msg.stage,
-          stageEpoch: currentStageEpoch,
-          hp: nextHp,
-          maxHp: msg.maxHp,
-          damage: msg.damage,
-          attackerId: msg.attackerId,
-          spellId: msg.spellId,
-          stunSec: msg.stunSec,
-          freezeSec: msg.freezeSec,
-          killed,
-          x: msg.x,
-          z: msg.z,
-        };
-        opts.onEnemyDamaged(damagedMsg);
-        broadcastFromHost(damagedMsg);
-        break;
-      }
-
-      case 'enemy_sync': {
-        if (currentLabyrinthMode !== 'shared') return;
-        if (msg.stageEpoch !== currentStageEpoch) return;
-        for (const e of msg.enemies) {
-          enemiesMap.set(e.id, e);
-        }
-        opts.onEnemySynced({
-          stage: msg.stage,
-          senderId: msg.senderId,
-          enemies: msg.enemies,
-        });
-        broadcastFromHost(msg, fromConn);
-        break;
-      }
-
-      case 'world_event': {
-        if (currentLabyrinthMode !== 'shared') return;
-        if (msg.stageEpoch !== currentStageEpoch) return;
-        if (msg.payload.kind !== 'prop_sync' && rememberId(msg.eventId)) return;
-
-        if (msg.payload.kind === 'wall_dismantle') {
-          worldEventsHistory.delete(`wall_${msg.payload.targetId}`);
-        } else if (msg.payload.kind !== 'prop_sync') {
-          const key = `${msg.payload.kind}_${msg.payload.targetId}`;
-          worldEventsHistory.set(key, { eventId: msg.eventId, payload: msg.payload });
-        }
-        opts.onWorldEvent(msg.payload);
-        broadcastFromHost(msg, fromConn);
-        break;
-      }
-
-      case 'set_mode': {
-        currentLabyrinthMode = msg.labyrinthMode;
-        currentLabyrinthStage = msg.stage;
-        opts.onModeChanged(msg.labyrinthMode);
-        broadcastFromHost(msg, fromConn);
-        break;
-      }
-
-      case 'start_game': {
-        currentLabyrinthMode = 'shared';
-        currentLabyrinthStage = msg.stage;
-        resetEpochState(currentStageEpoch + 1);
-        const startMsg: PeerMessage = {
-          type: 'start_game',
-          roomCode: activeCode,
-          stage: msg.stage,
-          hostId: msg.hostId,
-          stageEpoch: currentStageEpoch,
-        };
-        opts.onGameStarted({
-          room: activeCode,
-          labyrinthStage: msg.stage,
-          hostId: msg.hostId,
-        });
-        broadcastFromHost(startMsg);
-        break;
-      }
-
-      case 'stage_advance': {
-        if (currentLabyrinthMode !== 'shared') return;
-        currentLabyrinthStage = msg.stage;
-        resetEpochState(currentStageEpoch + 1);
-        const advMsg: PeerMessage = { ...msg, stageEpoch: currentStageEpoch };
-        opts.onStageAdvanced({
-          stage: msg.stage,
-          victory: msg.victory,
-          reset: msg.reset,
-          senderId: msg.senderId,
-        });
-        broadcastFromHost(advMsg, fromConn);
-        break;
-      }
-
-      case 'player_died': {
-        const p = playersMap.get(msg.playerId);
-        if (p) {
-          p.isDead = true;
-          p.hp = 0;
-        }
-        emitPlayersSyncLocally();
-        broadcastFromHost({
-          type: 'players_sync',
-          players: Array.from(playersMap.values()),
-        });
-
-        const allDead =
-          playersMap.size > 0 && Array.from(playersMap.values()).every((pl) => pl.isDead);
-        if (allDead) {
-          const resetStage = toStageNum(msg.stage);
-          resetEpochState(currentStageEpoch + 1);
-          const resetMsg: PeerMessage = {
-            type: 'all_dead_reset',
-            stage: resetStage,
+      // When a new player joins, publish our own state immediately so they see us without waiting 500ms,
+      // and coordinator sends current world/enemy snapshot.
+      if (!wasKnown || msg.join) {
+        publishSelfState(false);
+        if (isCoordinator() && (enemiesMap.size > 0 || worldEventsHistory.size > 0 || currentLabyrinthStage > 1 || currentLabyrinthMode !== 'shared')) {
+          publishJson(eventsTopic, {
+            type: 'init_state',
+            eventId: `init_${selfId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            targetId: incomingId,
+            senderId: selfId,
+            labyrinthMode: currentLabyrinthMode,
+            labyrinthStage: currentLabyrinthStage,
             stageEpoch: currentStageEpoch,
-          };
-          opts.onAllDeadReset(resetStage);
-          broadcastFromHost(resetMsg);
+            enemies: Array.from(enemiesMap.values()),
+            worldEvents: Array.from(worldEventsHistory.values()),
+          } satisfies RoomEventMessage);
         }
-        break;
       }
-
-      case 'player_respawn': {
-        const p = playersMap.get(msg.playerId);
-        if (p) {
-          p.isDead = false;
-          p.hp = msg.maxHp;
-        }
-        emitPlayersSyncLocally();
-        broadcastFromHost({
-          type: 'players_sync',
-          players: Array.from(playersMap.values()),
-        });
-        break;
-      }
-
-      case 'duel_reset': {
-        for (const p of playersMap.values()) {
-          p.isDead = false;
-          p.hp = p.maxHp;
-        }
-        emitPlayersSyncLocally();
-        opts.onDuelReset();
-        broadcastFromHost({ type: 'duel_reset' });
-        broadcastFromHost({
-          type: 'players_sync',
-          players: Array.from(playersMap.values()),
-        });
-        break;
-      }
-
-      default:
-        break;
     }
   };
 
-  const handleGuestIncomingMessage = (msg: PeerMessage) => {
-    if (disposed) return;
+  const handleEventTopicMessage = (raw: unknown) => {
+    if (!raw || typeof raw !== 'object' || !('type' in raw)) return;
+    const msg = raw as RoomEventMessage;
 
     switch (msg.type) {
       case 'init_state': {
+        if (msg.senderId === selfId || rememberId(msg.eventId)) return;
+        if (msg.targetId !== selfId) return;
         currentLabyrinthMode = msg.labyrinthMode;
         currentLabyrinthStage = msg.labyrinthStage;
         currentStageEpoch = msg.stageEpoch;
-        playersMap.clear();
-        for (const p of msg.players) {
-          playersMap.set(p.id, p);
-        }
-        playersMap.set(selfId, selfPlayer);
-        emitPlayersSyncLocally();
         opts.onModeChanged(msg.labyrinthMode);
         if (msg.enemies.length > 0 && msg.labyrinthMode === 'shared') {
+          for (const e of msg.enemies) {
+            enemiesMap.set(e.id, e);
+          }
           opts.onEnemySynced({
             stage: msg.labyrinthStage,
-            senderId: 'host',
+            senderId: msg.senderId,
             enemies: msg.enemies,
           });
         }
         for (const item of msg.worldEvents) {
           if (!rememberId(item.eventId)) {
+            worldEventsHistory.set(`${item.payload.kind}_${item.payload.targetId}`, item);
             opts.onWorldEvent(item.payload);
           }
         }
-        break;
-      }
-
-      case 'players_sync': {
-        playersMap.clear();
-        for (const p of msg.players) {
-          playersMap.set(p.id, p);
-        }
-        if (!playersMap.has(selfId)) {
-          playersMap.set(selfId, selfPlayer);
-        }
-        emitPlayersSyncLocally();
         break;
       }
 
@@ -1032,11 +904,74 @@ export function connectPeerRoom(opts: PeerRoomConnectionOptions): PeerRoomContro
         break;
       }
 
+      case 'enemy_hit': {
+        if (currentLabyrinthMode !== 'shared') return;
+        if (msg.stageEpoch !== currentStageEpoch) return;
+        if (msg.attackerId === selfId) return;
+
+        // Coordinator resolves authoritative damage; if we are not coordinator we still wait for enemy_damaged
+        if (!isCoordinator()) return;
+        if (rememberId(`resolve_${msg.hitId}`)) return;
+
+        const existing = enemiesMap.get(msg.enemyId);
+        if (existing && (existing.killed || existing.hp <= 0)) return;
+        const prevHp = existing ? existing.hp : msg.maxHp;
+        const nextHp = Math.max(0, prevHp - msg.damage);
+        const killed = nextHp <= 0;
+
+        enemiesMap.set(msg.enemyId, {
+          id: msg.enemyId,
+          stage: msg.stage,
+          hp: nextHp,
+          maxHp: msg.maxHp,
+          x: msg.x,
+          y: msg.y,
+          z: msg.z,
+          state: killed ? 'ko' : 'seek',
+          killed,
+        });
+
+        const damagedMsg: RoomEventMessage = {
+          type: 'enemy_damaged',
+          hitId: msg.hitId,
+          enemyId: msg.enemyId,
+          stage: msg.stage,
+          stageEpoch: currentStageEpoch,
+          hp: nextHp,
+          maxHp: msg.maxHp,
+          damage: msg.damage,
+          attackerId: msg.attackerId,
+          spellId: msg.spellId,
+          stunSec: msg.stunSec,
+          freezeSec: msg.freezeSec,
+          killed,
+          x: msg.x,
+          z: msg.z,
+        };
+        opts.onEnemyDamaged(damagedMsg);
+        publishJson(eventsTopic, damagedMsg);
+        break;
+      }
+
       case 'enemy_damaged': {
         if (currentLabyrinthMode !== 'shared') return;
         if (msg.stageEpoch !== currentStageEpoch) return;
-        if (msg.attackerId === selfId || rememberId(msg.hitId)) return;
-        opts.onEnemyDamaged(msg);
+        if (rememberId(msg.hitId)) return;
+
+        enemiesMap.set(msg.enemyId, {
+          id: msg.enemyId,
+          stage: msg.stage,
+          hp: msg.hp,
+          maxHp: msg.maxHp,
+          x: msg.x,
+          y: 0,
+          z: msg.z,
+          state: msg.killed ? 'ko' : 'seek',
+          killed: msg.killed,
+        });
+        if (msg.attackerId !== selfId) {
+          opts.onEnemyDamaged(msg);
+        }
         break;
       }
 
@@ -1044,6 +979,9 @@ export function connectPeerRoom(opts: PeerRoomConnectionOptions): PeerRoomContro
         if (currentLabyrinthMode !== 'shared') return;
         if (msg.stageEpoch !== currentStageEpoch) return;
         if (msg.senderId === selfId) return;
+        for (const e of msg.enemies) {
+          enemiesMap.set(e.id, e);
+        }
         opts.onEnemySynced({
           stage: msg.stage,
           senderId: msg.senderId,
@@ -1057,11 +995,21 @@ export function connectPeerRoom(opts: PeerRoomConnectionOptions): PeerRoomContro
         if (msg.stageEpoch !== currentStageEpoch) return;
         if (msg.senderId === selfId) return;
         if (msg.payload.kind !== 'prop_sync' && rememberId(msg.eventId)) return;
+
+        if (msg.payload.kind === 'wall_dismantle') {
+          worldEventsHistory.delete(`wall_${msg.payload.targetId}`);
+        } else if (msg.payload.kind !== 'prop_sync') {
+          worldEventsHistory.set(`${msg.payload.kind}_${msg.payload.targetId}`, {
+            eventId: msg.eventId,
+            payload: msg.payload,
+          });
+        }
         opts.onWorldEvent(msg.payload);
         break;
       }
 
       case 'set_mode': {
+        if (msg.senderId === selfId || rememberId(msg.eventId)) return;
         currentLabyrinthMode = msg.labyrinthMode;
         currentLabyrinthStage = msg.stage;
         opts.onModeChanged(msg.labyrinthMode);
@@ -1069,6 +1017,7 @@ export function connectPeerRoom(opts: PeerRoomConnectionOptions): PeerRoomContro
       }
 
       case 'start_game': {
+        if (msg.hostId === selfId || rememberId(msg.eventId)) return;
         currentLabyrinthMode = 'shared';
         currentLabyrinthStage = msg.stage;
         resetEpochState(msg.stageEpoch);
@@ -1082,28 +1031,73 @@ export function connectPeerRoom(opts: PeerRoomConnectionOptions): PeerRoomContro
 
       case 'stage_advance': {
         if (currentLabyrinthMode !== 'shared') return;
+        if (msg.senderId === selfId || rememberId(msg.eventId)) return;
         currentLabyrinthStage = msg.stage;
         resetEpochState(msg.stageEpoch);
-        if (msg.senderId !== selfId) {
-          opts.onStageAdvanced({
-            stage: msg.stage,
-            victory: msg.victory,
-            reset: msg.reset,
-            senderId: msg.senderId,
-          });
+        opts.onStageAdvanced({
+          stage: msg.stage,
+          victory: msg.victory,
+          reset: msg.reset,
+          senderId: msg.senderId,
+        });
+        break;
+      }
+
+      case 'player_died': {
+        if (rememberId(msg.eventId)) return;
+        const p = playersMap.get(msg.playerId);
+        if (p) {
+          p.isDead = true;
+          p.hp = 0;
+        }
+        emitPlayersSync();
+        if (isCoordinator()) {
+          const allDead =
+            playersMap.size > 0 && Array.from(playersMap.values()).every((pl) => pl.isDead);
+          if (allDead) {
+            const resetStage = toStageNum(msg.stage);
+            resetEpochState(currentStageEpoch + 1);
+            const resetMsg: RoomEventMessage = {
+              type: 'all_dead_reset',
+              eventId: `adr_${selfId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+              stage: resetStage,
+              stageEpoch: currentStageEpoch,
+            };
+            rememberId(resetMsg.eventId);
+            opts.onAllDeadReset(resetStage);
+            publishJson(eventsTopic, resetMsg);
+          }
         }
         break;
       }
 
+      case 'player_respawn': {
+        if (rememberId(msg.eventId)) return;
+        const p = playersMap.get(msg.playerId);
+        if (p) {
+          p.isDead = false;
+          p.hp = msg.maxHp;
+        }
+        emitPlayersSync();
+        break;
+      }
+
       case 'all_dead_reset': {
+        if (rememberId(msg.eventId)) return;
         resetEpochState(msg.stageEpoch);
         opts.onAllDeadReset(msg.stage);
         break;
       }
 
       case 'duel_reset': {
+        if (msg.senderId === selfId || rememberId(msg.eventId)) return;
+        for (const p of playersMap.values()) {
+          p.isDead = false;
+          p.hp = p.maxHp;
+        }
         selfPlayer.isDead = false;
         selfPlayer.hp = selfPlayer.maxHp;
+        emitPlayersSync();
         opts.onDuelReset();
         break;
       }
@@ -1113,172 +1107,155 @@ export function connectPeerRoom(opts: PeerRoomConnectionOptions): PeerRoomContro
     }
   };
 
-  const startHostPeer = (codeToClaim: string) => {
-    if (disposed) return;
-    activeCode = codeToClaim;
-    const peer = new Peer(toPeerRoomId(codeToClaim), { config: PEER_ICE_CONFIG });
-    peerInstance = peer;
-
-    peer.on('open', () => {
-      if (disposed) {
-        peer.destroy();
-        return;
-      }
-      opts.onRoomCodeResolved?.(activeCode);
-      opts.onConnectedChange(true);
-      emitPlayersSyncLocally();
-    });
-
-    peer.on('connection', (conn) => {
-      if (disposed) {
-        conn.close();
-        return;
-      }
-      guestConnections.set(conn, null);
-
-      conn.on('data', (raw) => {
-        if (raw && typeof raw === 'object' && 'type' in raw) {
-          handleHostIncomingMessage(raw as PeerMessage, conn);
-        }
-      });
-
-      const handleDisconnect = () => {
-        const mappedPlayerId = guestConnections.get(conn);
-        guestConnections.delete(conn);
-        if (mappedPlayerId && mappedPlayerId !== selfId) {
-          playersMap.delete(mappedPlayerId);
-          emitPlayersSyncLocally();
-          broadcastFromHost({
-            type: 'players_sync',
-            players: Array.from(playersMap.values()),
-          });
-        }
-      };
-
-      conn.on('close', handleDisconnect);
-      conn.on('error', handleDisconnect);
-    });
-
-    peer.on('error', (err) => {
-      if (disposed) return;
-      if (err.type === 'unavailable-id' && hostRetryCount < 6) {
-        hostRetryCount++;
-        try {
-          peer.destroy();
-        } catch {
-          // Ignore
-        }
-        let nextCode = generateTwoDigitRoomCode();
-        while (triedCodes.has(nextCode) && triedCodes.size < 80) {
-          nextCode = generateTwoDigitRoomCode();
-        }
-        triedCodes.add(nextCode);
-        startHostPeer(nextCode);
-        return;
-      }
-      opts.onConnectedChange(false);
-      opts.onConnectionError?.(`Ошибка комнаты ${activeCode}`);
-    });
+  const clearWatchdog = () => {
+    if (connectWatchdogTimer !== null) {
+      window.clearTimeout(connectWatchdogTimer);
+      connectWatchdogTimer = null;
+    }
   };
 
-  const startGuestPeer = (targetCode: string) => {
+  const connectToBroker = (index: number) => {
     if (disposed) return;
-    activeCode = targetCode;
-    const peer = new Peer({ config: PEER_ICE_CONFIG });
-    peerInstance = peer;
+    brokerIndex = index;
+    currentBrokerUrl = MQTT_BROKERS[index] || MQTT_BROKERS[0];
 
-    peer.on('open', () => {
-      if (disposed) {
-        peer.destroy();
-        return;
+    if (client) {
+      try {
+        client.removeAllListeners();
+        client.end(true);
+      } catch {
+        // Ignore cleanup errors
       }
-      const conn = peer.connect(toPeerRoomId(targetCode), { reliable: true });
-      hostConnection = conn;
+      client = null;
+    }
 
-      conn.on('open', () => {
-        if (disposed) {
-          conn.close();
+    const willPayload = JSON.stringify({
+      type: 'leave',
+      playerId: selfId,
+    } satisfies PlayerTopicPayload);
+
+    const clientId = `va_${activeCode}_${selfId}_${Math.random().toString(36).slice(2, 6)}`.slice(
+      0,
+      64
+    );
+
+    const nextClient = mqtt.connect(currentBrokerUrl, {
+      clientId,
+      clean: true,
+      connectTimeout: 6000,
+      reconnectPeriod: 2500,
+      keepalive: 15,
+      will: {
+        topic: selfPlayerTopic,
+        payload: willPayload,
+        qos: 0,
+        retain: false,
+      },
+    });
+    client = nextClient;
+
+    let failedOver = false;
+    const triggerFallback = () => {
+      if (disposed || isConnected || failedOver) return;
+      failedOver = true;
+      clearWatchdog();
+      if (brokerIndex + 1 < MQTT_BROKERS.length) {
+        connectToBroker(brokerIndex + 1);
+      } else {
+        opts.onConnectedChange(false);
+        opts.onConnectionError?.(`Не удалось подключиться к комнате ${activeCode}`);
+      }
+    };
+
+    clearWatchdog();
+    connectWatchdogTimer = window.setTimeout(() => {
+      if (!disposed && !isConnected) {
+        triggerFallback();
+      }
+    }, 5500);
+
+    nextClient.on('connect', () => {
+      if (disposed || client !== nextClient) return;
+      clearWatchdog();
+      isConnected = true;
+      opts.onConnectedChange(true);
+
+      nextClient.subscribe(wildcardTopic, { qos: 0 }, (err) => {
+        if (disposed || client !== nextClient) return;
+        if (err) {
+          opts.onConnectionError?.(`Ошибка подписки комнаты ${activeCode}`);
           return;
         }
-        opts.onConnectedChange(true);
-        conn.send({
-          type: 'hello',
-          player: { ...selfPlayer, lastSeenMs: Date.now() },
-        } satisfies PeerMessage);
-      });
-
-      conn.on('data', (raw) => {
-        if (raw && typeof raw === 'object' && 'type' in raw) {
-          handleGuestIncomingMessage(raw as PeerMessage);
-        }
-      });
-
-      conn.on('close', () => {
-        if (!disposed) {
-          opts.onConnectedChange(false);
-        }
-      });
-
-      conn.on('error', () => {
-        if (!disposed) {
-          opts.onConnectedChange(false);
-          opts.onConnectionError?.(`Не удалось подключиться к комнате ${targetCode}`);
-        }
+        publishSelfState(true);
+        emitPlayersSync();
       });
     });
 
-    peer.on('error', (err) => {
-      if (disposed) return;
+    nextClient.on('message', (topic, messageBuffer) => {
+      if (disposed || client !== nextClient) return;
+      let parsed: unknown;
+      try {
+        const text =
+          typeof messageBuffer === 'string'
+            ? messageBuffer
+            : new TextDecoder().decode(messageBuffer);
+        parsed = JSON.parse(text);
+      } catch {
+        return;
+      }
+
+      if (topic === eventsTopic) {
+        handleEventTopicMessage(parsed);
+      } else if (topic.startsWith(playerTopicPrefix)) {
+        const topicPlayerId = topic.slice(playerTopicPrefix.length);
+        handlePlayerTopicMessage(topicPlayerId, parsed);
+      }
+    });
+
+    nextClient.on('offline', () => {
+      if (disposed || client !== nextClient) return;
+      isConnected = false;
       opts.onConnectedChange(false);
-      if (err.type === 'peer-unavailable') {
-        opts.onConnectionError?.(`Комната ${targetCode} не найдена`);
-      } else {
-        opts.onConnectionError?.(`Ошибка подключения к комнате ${targetCode}`);
+    });
+
+    nextClient.on('close', () => {
+      if (disposed || client !== nextClient) return;
+      const wasConnected = isConnected;
+      isConnected = false;
+      opts.onConnectedChange(false);
+      if (!wasConnected) {
+        triggerFallback();
+      }
+    });
+
+    nextClient.on('error', () => {
+      if (disposed || client !== nextClient) return;
+      if (!isConnected) {
+        triggerFallback();
       }
     });
   };
 
-  if (opts.role === 'host') {
-    startHostPeer(activeCode);
-  } else {
-    startGuestPeer(activeCode);
-  }
+  connectToBroker(0);
+  emitPlayersSync();
 
-  // Heartbeat keep-alive every 4s & stale peer cleanup on Host
+  // Publish player state every 500ms and prune inactive players after 3s
   const heartbeatTimer = window.setInterval(() => {
     if (disposed) return;
     const now = Date.now();
-    selfPlayer.lastSeenMs = now;
-    playersMap.set(selfId, selfPlayer);
-
-    if (opts.role === 'host') {
-      let pruned = false;
-      for (const [pid, p] of playersMap.entries()) {
-        if (pid !== selfId && now - p.lastSeenMs > 18000) {
-          playersMap.delete(pid);
-          pruned = true;
-        }
-      }
-      if (pruned) {
-        emitPlayersSyncLocally();
-        broadcastFromHost({
-          type: 'players_sync',
-          players: Array.from(playersMap.values()),
-        });
-      }
-    } else if (hostConnection && hostConnection.open) {
-      hostConnection.send({
-        type: 'move',
-        player: { ...selfPlayer },
-      } satisfies PeerMessage);
+    if (client && client.connected && now - lastHeartbeatPublishedAt >= PLAYER_HEARTBEAT_MS - 30) {
+      publishSelfState(false);
     }
-  }, 4000);
+    if (pruneInactivePlayers(playersMap, selfId, now, PLAYER_INACTIVITY_TIMEOUT_MS)) {
+      emitPlayersSync();
+    }
+  }, PLAYER_HEARTBEAT_MS);
 
   return {
-    get roomCode() {
-      return activeCode;
+    roomCode: activeCode,
+    get brokerUrl() {
+      return currentBrokerUrl;
     },
-    role: opts.role,
 
     sendMove: (pos) => {
       if (disposed) return;
@@ -1300,32 +1277,21 @@ export function connectPeerRoom(opts: PeerRoomConnectionOptions): PeerRoomContro
 
       const now = performance.now();
       const hasPeers = playersMap.size > 1;
-      const minInterval = hasPeers ? 65 : 1500;
+      const minInterval = hasPeers ? 75 : 500;
       const sig = `${pos.x.toFixed(1)}_${pos.z.toFixed(1)}_${pos.rotY.toFixed(1)}_${pos.hp}_${pos.maxHp}_${pos.shieldActive}_${pos.staffId}_${pos.level}_${pos.name}`;
-      if (sig === lastMoveSignature && now - lastMoveSentAt < 3000) return;
-      if (now - lastMoveSentAt < minInterval) return;
+      if (sig === lastMoveSignature && now - lastMovePublishedAt < PLAYER_HEARTBEAT_MS) return;
+      if (now - lastMovePublishedAt < minInterval) return;
 
-      lastMoveSentAt = now;
+      lastMovePublishedAt = now;
       lastMoveSignature = sig;
-
-      if (opts.role === 'host') {
-        broadcastFromHost({
-          type: 'players_sync',
-          players: Array.from(playersMap.values()),
-        });
-      } else {
-        sendToHostOrBroadcast({
-          type: 'move',
-          player: { ...selfPlayer },
-        });
-      }
+      publishSelfState(false);
     },
 
     sendSpellCast: (payload) => {
       if (disposed) return;
       const eventId = `sc_${selfId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
       rememberId(eventId);
-      sendToHostOrBroadcast({
+      publishJson(eventsTopic, {
         type: 'spell_cast',
         eventId,
         casterId: selfId,
@@ -1335,21 +1301,21 @@ export function connectPeerRoom(opts: PeerRoomConnectionOptions): PeerRoomContro
         origin: payload.origin,
         direction: payload.direction,
         color: payload.color,
-      });
+      } satisfies RoomEventMessage);
     },
 
     sendPlayerHit: (targetId, damage, attackerName) => {
       if (disposed || !targetId) return;
       const eventId = `ph_${selfId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
       rememberId(eventId);
-      sendToHostOrBroadcast({
+      publishJson(eventsTopic, {
         type: 'player_hit',
         eventId,
         targetId,
         attackerId: selfId,
         attackerName,
         damage,
-      });
+      } satisfies RoomEventMessage);
     },
 
     sendEnemyHit: (payload) => {
@@ -1357,7 +1323,7 @@ export function connectPeerRoom(opts: PeerRoomConnectionOptions): PeerRoomContro
       const hitId =
         payload.hitId || `hit_${selfId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
-      if (opts.role === 'host') {
+      if (isCoordinator()) {
         if (rememberId(hitId)) return;
         const existing = enemiesMap.get(payload.enemyId);
         if (existing && (existing.killed || existing.hp <= 0)) return;
@@ -1377,7 +1343,7 @@ export function connectPeerRoom(opts: PeerRoomConnectionOptions): PeerRoomContro
           killed,
         });
 
-        broadcastFromHost({
+        publishJson(eventsTopic, {
           type: 'enemy_damaged',
           hitId,
           enemyId: payload.enemyId,
@@ -1393,9 +1359,9 @@ export function connectPeerRoom(opts: PeerRoomConnectionOptions): PeerRoomContro
           killed,
           x: payload.x,
           z: payload.z,
-        });
+        } satisfies RoomEventMessage);
       } else {
-        sendToHostOrBroadcast({
+        publishJson(eventsTopic, {
           type: 'enemy_hit',
           hitId,
           enemyId: payload.enemyId,
@@ -1410,7 +1376,7 @@ export function connectPeerRoom(opts: PeerRoomConnectionOptions): PeerRoomContro
           stunSec: payload.stunSec,
           freezeSec: payload.freezeSec,
           attackerId: selfId,
-        });
+        } satisfies RoomEventMessage);
       }
     },
 
@@ -1418,9 +1384,7 @@ export function connectPeerRoom(opts: PeerRoomConnectionOptions): PeerRoomContro
       if (disposed || currentLabyrinthMode !== 'shared') return;
       const now = performance.now();
       if (now - lastEnemySyncAt < 350) return;
-
-      // Only the host broadcasts periodic authoritative enemy snapshots
-      if (opts.role !== 'host' && playersMap.size > 1) return;
+      if (!isCoordinator() && playersMap.size > 1) return;
 
       lastEnemySyncAt = now;
       const normalized: EnemyWireState[] = payload.enemies.slice(0, 14).map((e) => ({
@@ -1438,13 +1402,13 @@ export function connectPeerRoom(opts: PeerRoomConnectionOptions): PeerRoomContro
         enemiesMap.set(e.id, e);
       }
 
-      broadcastFromHost({
+      publishJson(eventsTopic, {
         type: 'enemy_sync',
         stage: payload.stage,
         stageEpoch: currentStageEpoch,
         senderId: selfId,
         enemies: normalized,
-      });
+      } satisfies RoomEventMessage);
     },
 
     sendWorldEvent: (payload) => {
@@ -1458,72 +1422,68 @@ export function connectPeerRoom(opts: PeerRoomConnectionOptions): PeerRoomContro
       const eventId = `wev_${selfId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
       rememberId(eventId);
 
-      if (opts.role === 'host') {
-        if (payload.kind === 'wall_dismantle') {
-          worldEventsHistory.delete(`wall_${payload.targetId}`);
-        } else if (payload.kind !== 'prop_sync') {
-          worldEventsHistory.set(`${payload.kind}_${payload.targetId}`, { eventId, payload });
-        }
+      if (payload.kind === 'wall_dismantle') {
+        worldEventsHistory.delete(`wall_${payload.targetId}`);
+      } else if (payload.kind !== 'prop_sync') {
+        worldEventsHistory.set(`${payload.kind}_${payload.targetId}`, { eventId, payload });
       }
 
-      sendToHostOrBroadcast({
+      publishJson(eventsTopic, {
         type: 'world_event',
         eventId,
         stageEpoch: currentStageEpoch,
         senderId: selfId,
         payload,
-      });
+      } satisfies RoomEventMessage);
     },
 
     sendSetMode: (nextMode, stage) => {
       if (disposed) return;
       currentLabyrinthMode = nextMode;
       currentLabyrinthStage = stage;
-      sendToHostOrBroadcast({
+      const eventId = `mode_${selfId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      rememberId(eventId);
+      publishJson(eventsTopic, {
         type: 'set_mode',
+        eventId,
+        senderId: selfId,
         labyrinthMode: nextMode,
         stage,
-      });
+      } satisfies RoomEventMessage);
     },
 
     sendStartGame: (stage) => {
       if (disposed) return;
       currentLabyrinthMode = 'shared';
       currentLabyrinthStage = stage;
-      if (opts.role === 'host') {
-        resetEpochState(currentStageEpoch + 1);
-        broadcastFromHost({
-          type: 'start_game',
-          roomCode: activeCode,
-          stage,
-          hostId: selfId,
-          stageEpoch: currentStageEpoch,
-        });
-      } else {
-        sendToHostOrBroadcast({
-          type: 'start_game',
-          roomCode: activeCode,
-          stage,
-          hostId: selfId,
-          stageEpoch: currentStageEpoch,
-        });
-      }
+      resetEpochState(currentStageEpoch + 1);
+      const eventId = `start_${selfId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      rememberId(eventId);
+      publishJson(eventsTopic, {
+        type: 'start_game',
+        eventId,
+        roomCode: activeCode,
+        stage,
+        hostId: selfId,
+        stageEpoch: currentStageEpoch,
+      } satisfies RoomEventMessage);
     },
 
     sendStageAdvance: (payload) => {
       if (disposed || currentLabyrinthMode !== 'shared') return;
       currentLabyrinthStage = payload.stage;
-      if (opts.role === 'host') {
-        resetEpochState(currentStageEpoch + 1);
-      }
-      sendToHostOrBroadcast({
+      resetEpochState(currentStageEpoch + 1);
+      const eventId = `adv_${selfId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      rememberId(eventId);
+      publishJson(eventsTopic, {
         type: 'stage_advance',
+        eventId,
         stage: payload.stage,
         victory: payload.victory,
         reset: payload.reset,
         senderId: selfId,
         stageEpoch: currentStageEpoch,
-      });
+      } satisfies RoomEventMessage);
     },
 
     sendPlayerDied: (stage) => {
@@ -1531,31 +1491,34 @@ export function connectPeerRoom(opts: PeerRoomConnectionOptions): PeerRoomContro
       selfPlayer.isDead = true;
       selfPlayer.hp = 0;
       playersMap.set(selfId, selfPlayer);
+      publishSelfState(false);
 
-      if (opts.role === 'host') {
-        emitPlayersSyncLocally();
-        broadcastFromHost({
-          type: 'players_sync',
-          players: Array.from(playersMap.values()),
-        });
+      const eventId = `died_${selfId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      rememberId(eventId);
+      publishJson(eventsTopic, {
+        type: 'player_died',
+        eventId,
+        playerId: selfId,
+        stage,
+      } satisfies RoomEventMessage);
+
+      emitPlayersSync();
+      if (isCoordinator()) {
         const allDead =
           playersMap.size > 0 && Array.from(playersMap.values()).every((p) => p.isDead);
         if (allDead) {
           const resetStage = toStageNum(stage);
           resetEpochState(currentStageEpoch + 1);
+          const resetId = `adr_${selfId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+          rememberId(resetId);
           opts.onAllDeadReset(resetStage);
-          broadcastFromHost({
+          publishJson(eventsTopic, {
             type: 'all_dead_reset',
+            eventId: resetId,
             stage: resetStage,
             stageEpoch: currentStageEpoch,
-          });
+          } satisfies RoomEventMessage);
         }
-      } else {
-        sendToHostOrBroadcast({
-          type: 'player_died',
-          playerId: selfId,
-          stage,
-        });
       }
     },
 
@@ -1564,69 +1527,71 @@ export function connectPeerRoom(opts: PeerRoomConnectionOptions): PeerRoomContro
       selfPlayer.isDead = false;
       selfPlayer.hp = Math.max(1, Math.round(maxHp || selfPlayer.maxHp));
       playersMap.set(selfId, selfPlayer);
-      if (opts.role === 'host') {
-        emitPlayersSyncLocally();
-        broadcastFromHost({
-          type: 'players_sync',
-          players: Array.from(playersMap.values()),
-        });
-      } else {
-        sendToHostOrBroadcast({
-          type: 'player_respawn',
-          playerId: selfId,
-          maxHp: selfPlayer.hp,
-        });
-      }
+      publishSelfState(false);
+      const eventId = `resp_${selfId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      rememberId(eventId);
+      publishJson(eventsTopic, {
+        type: 'player_respawn',
+        eventId,
+        playerId: selfId,
+        maxHp: selfPlayer.hp,
+      } satisfies RoomEventMessage);
+      emitPlayersSync();
     },
 
     sendDuelReset: () => {
       if (disposed) return;
+      for (const p of playersMap.values()) {
+        p.isDead = false;
+        p.hp = p.maxHp;
+      }
       selfPlayer.isDead = false;
       selfPlayer.hp = selfPlayer.maxHp;
       playersMap.set(selfId, selfPlayer);
-      if (opts.role === 'host') {
-        for (const p of playersMap.values()) {
-          p.isDead = false;
-          p.hp = p.maxHp;
-        }
-        emitPlayersSyncLocally();
-        broadcastFromHost({ type: 'duel_reset' });
-        broadcastFromHost({
-          type: 'players_sync',
-          players: Array.from(playersMap.values()),
-        });
-      } else {
-        sendToHostOrBroadcast({ type: 'duel_reset' });
-      }
+      publishSelfState(false);
+      const eventId = `duel_${selfId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      rememberId(eventId);
+      publishJson(eventsTopic, {
+        type: 'duel_reset',
+        eventId,
+        senderId: selfId,
+      } satisfies RoomEventMessage);
+      emitPlayersSync();
     },
 
     dispose: () => {
-      disposed = true;
+      if (disposed) return;
+      clearWatchdog();
       window.clearInterval(heartbeatTimer);
-      for (const conn of guestConnections.keys()) {
+
+      if (client && client.connected) {
         try {
-          conn.close();
+          client.publish(
+            selfPlayerTopic,
+            JSON.stringify({
+              type: 'leave',
+              playerId: selfId,
+            } satisfies PlayerTopicPayload),
+            { qos: 0, retain: false }
+          );
         } catch {
           // Ignore
         }
       }
-      guestConnections.clear();
-      if (hostConnection) {
+
+      disposed = true;
+      isConnected = false;
+
+      if (client) {
         try {
-          hostConnection.close();
+          client.removeAllListeners();
+          client.end(true);
         } catch {
           // Ignore
         }
-        hostConnection = null;
+        client = null;
       }
-      if (peerInstance) {
-        try {
-          peerInstance.destroy();
-        } catch {
-          // Ignore
-        }
-        peerInstance = null;
-      }
+
       playersMap.clear();
       enemiesMap.clear();
       worldEventsHistory.clear();

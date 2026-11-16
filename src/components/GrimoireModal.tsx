@@ -2650,7 +2650,7 @@ export const GrimoireModal: React.FC<GrimoireModalProps> = ({
                     </h4>
                     {pvpConnected && (
                       <span className="text-xs font-mono-num text-[#4ade80]">
-                        ● WebRTC
+                        ● MQTT
                       </span>
                     )}
                   </div>

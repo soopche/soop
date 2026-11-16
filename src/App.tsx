@@ -85,7 +85,7 @@ import {
 } from './game/world3d';
 import { GrimoireModal, GrimoireTab, ItemBadgeIcon } from './components/GrimoireModal';
 import {
-  connectPeerRoom,
+  connectMqttRoom,
   generateTwoDigitRoomCode,
   getActiveCharacterIdFromStorage,
   getOrCreateGuestDeviceId,
@@ -96,9 +96,8 @@ import {
   sanitizeCharacterProfile,
   saveLocalCharacters,
   setActiveCharacterIdInStorage,
-  type PeerRoomController,
-  type PeerRoomRole,
-} from './game/peerRoom';
+  type MqttRoomController,
+} from './game/mqttRoom';
 
 const INITIAL_COOLDOWNS: Record<SpellId, number> = {
   incendio: 0,
@@ -132,7 +131,7 @@ export default function App() {
   const canvasMountRef = useRef<HTMLDivElement | null>(null);
   const worldRef = useRef<ArcaneWorldEngine | null>(null);
   const voiceRef = useRef<VoiceSpellRecognizer | null>(null);
-  const roomSessionRef = useRef<PeerRoomController | null>(null);
+  const roomSessionRef = useRef<MqttRoomController | null>(null);
 
   const initialAutoStart =
     typeof window !== 'undefined' &&
@@ -290,7 +289,7 @@ export default function App() {
     enemiesDefeated: number;
   } | null>(null);
 
-  // Multiplayer PeerJS (WebRTC) State
+  // Multiplayer MQTT (WebSockets) State
   const [selfPlayerId] = useState(() => getOrCreateSessionPlayerId());
   const [pvpRoom, setPvpRoom] = useState('');
   const [pvpPlayerName, setPvpPlayerName] = useState('Магистр Арканума');
@@ -988,9 +987,9 @@ export default function App() {
     [recordQuestEvents, showToast]
   );
 
-  // Connect to PeerJS (WebRTC) Room for Multiplayer Co-op & PvP Duels
+  // Connect to MQTT over WebSockets Room for cross-device Multiplayer Co-op & PvP Duels
   const connectMultiplayerRoom = useCallback(
-    (roomCode: string, wizardName: string, role: PeerRoomRole = 'guest') => {
+    (roomCode: string, wizardName: string) => {
       if (typeof window === 'undefined') return;
       const parsedCode = parseTwoDigitRoomCode(roomCode);
       if (!parsedCode) {
@@ -1007,8 +1006,7 @@ export default function App() {
       setRemotePlayers([]);
       setPvpConnected(false);
 
-      const controller = connectPeerRoom({
-        role,
+      const controller = connectMqttRoom({
         roomCode: parsedCode,
         playerId: stateRef.current.selfPlayerId,
         playerName: wizardName,
@@ -1017,9 +1015,6 @@ export default function App() {
         staffId: stateRef.current.equippedStaffId,
         labyrinthMode: stateRef.current.labyrinthMultiplayerMode,
         stage: worldRef.current?.labyrinthStage || 1,
-        onRoomCodeResolved: (resolved) => {
-          setPvpRoom(resolved);
-        },
         onConnectedChange: (connected) => {
           setPvpConnected(connected);
         },
@@ -1376,9 +1371,11 @@ export default function App() {
       roomSessionRef.current?.dispose();
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('pagehide', handleBeforeUnload);
 
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('pagehide', handleBeforeUnload);
       recognizer.stop();
       roomSessionRef.current?.dispose();
       roomSessionRef.current = null;
@@ -2887,7 +2884,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* COMPACT SINGLE-LINE CO-OP BAR (PeerJS WebRTC, 2-Digit Room Code) */}
+            {/* COMPACT SINGLE-LINE CO-OP BAR (MQTT WebSocket, 2-Digit Room Code) */}
             <div
               data-testid="title-coop-room-panel"
               className="px-3 py-2 rounded-xl border border-[#22c55e]/60 bg-[#101c18]/95 flex flex-wrap items-center gap-2 shadow-xl"
@@ -2898,7 +2895,7 @@ export default function App() {
                 onClick={() => {
                   const code = generateTwoDigitRoomCode();
                   setPvpRoom(code);
-                  connectMultiplayerRoom(code, pvpPlayerName, 'host');
+                  connectMultiplayerRoom(code, pvpPlayerName);
                 }}
                 className="px-3 py-1.5 rounded-lg bg-[#15803d] hover:bg-[#16a34a] text-white text-xs font-bold cursor-pointer shrink-0"
               >
@@ -2951,7 +2948,7 @@ export default function App() {
                       return;
                     }
                     setPvpRoom(parsed);
-                    connectMultiplayerRoom(parsed, pvpPlayerName, 'guest');
+                    connectMultiplayerRoom(parsed, pvpPlayerName);
                   }}
                   className="px-3 py-1.5 rounded-lg bg-[#1e293b] hover:bg-[#334155] border border-[#38bdf8] text-[#bae6fd] text-xs font-bold cursor-pointer shrink-0"
                 >
@@ -4172,7 +4169,7 @@ export default function App() {
             }
             setPvpRoom(parsed);
             setPvpPlayerName(name);
-            connectMultiplayerRoom(parsed, name, 'guest');
+            connectMultiplayerRoom(parsed, name);
           }}
           onResetPvpDuel={() => {
             roomSessionRef.current?.sendDuelReset();
