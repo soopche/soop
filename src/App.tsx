@@ -85,12 +85,6 @@ import {
 } from './game/world3d';
 import { GrimoireModal, GrimoireTab, ItemBadgeIcon } from './components/GrimoireModal';
 import {
-  signInWithGooglePopup,
-  signOutUser,
-  subscribeToAuthChanges,
-  saveCharacterToFirestore,
-  deleteCharacterFromFirestore,
-  subscribeToUserCharacters,
   savePlayerProfileToFirestore,
   loadPlayerProfileFromFirestore,
   deletePlayerProfileFromFirestore,
@@ -104,7 +98,6 @@ import {
   setActiveCharacterIdInStorage,
   sanitizeCharacterProfile,
 } from './game/firebase';
-import type { User } from 'firebase/auth';
 
 const INITIAL_COOLDOWNS: Record<SpellId, number> = {
   incendio: 0,
@@ -220,8 +213,7 @@ export default function App() {
   const [quests, setQuests] = useState<QuestDef[]>(INITIAL_QUESTS);
   const [questCompletedBanner, setQuestCompletedBanner] = useState<string | null>(null);
 
-  // Account, Multi-Character & Diablo Difficulty State
-  const [authUser, setAuthUser] = useState<User | null>(null);
+  // Multi-Character & Diablo Difficulty State
   const [accountModalOpen, setAccountModalOpen] = useState(false);
   const [newCharNameInput, setNewCharNameInput] = useState('');
   const [cloudSaveStatus, setCloudSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>(
@@ -302,7 +294,7 @@ export default function App() {
 
   // Multiplayer Cloud Firestore State
   const [selfPlayerId] = useState(() => `wiz_${Math.random().toString(36).slice(2, 8)}`);
-  const [pvpRoom, setPvpRoom] = useState('arena-1');
+  const [pvpRoom, setPvpRoom] = useState('arcanum-1');
   const [pvpPlayerName, setPvpPlayerName] = useState('Магистр Арканума');
   const [pvpConnected, setPvpConnected] = useState(false);
   const [remotePlayers, setRemotePlayers] = useState<RemotePlayerState[]>([]);
@@ -552,13 +544,13 @@ export default function App() {
 
   // Load initial local character on first mount & hydrate latest snapshot from Firestore player_profiles
   useEffect(() => {
-    const owner = authUser?.uid || 'local_guest';
+    const owner = 'local_guest';
     const localChars = loadLocalCharacters(owner);
     const storedActiveId = getActiveCharacterIdFromStorage(owner);
     const chosen = localChars.find((c) => c.id === storedActiveId) || localChars[0];
     if (chosen) {
       applyCharacterProfileToState(chosen);
-      // Hydrate from Firestore player_profiles so progress never resets across reloads
+      // Hydrate from Firestore player_profiles directly (no Firebase Auth required)
       void loadPlayerProfileFromFirestore(chosen.id)
         .then((remote) => {
           if (!remote) return;
@@ -577,100 +569,14 @@ export default function App() {
             });
             applyCharacterProfileToState(remote);
           }
+          setCloudSaveStatus('saved');
         })
-        .catch(() => {});
+        .catch(() => {
+          setCloudSaveStatus('error');
+        });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // Subscribe to Firebase Auth & Firestore Characters when signed in
-  useEffect(() => {
-    let unsubFirestore: (() => void) | null = null;
-    const unsubAuth = subscribeToAuthChanges((user) => {
-      setAuthUser(user);
-      if (unsubFirestore) {
-        unsubFirestore();
-        unsubFirestore = null;
-      }
-      if (user) {
-        let initialRemoteHydrated = false;
-        setCloudSaveStatus('saving');
-        unsubFirestore = subscribeToUserCharacters(
-          user.uid,
-          (remoteChars) => {
-            if (remoteChars.length > 0) {
-              setCharacters(remoteChars);
-              saveLocalCharacters(user.uid, remoteChars);
-              // Only hydrate character state on initial sign-in load so echoed auto-saves after monster kills never reset HP/MP!
-              if (!initialRemoteHydrated) {
-                initialRemoteHydrated = true;
-                const preferredId = getActiveCharacterIdFromStorage(user.uid);
-                const targetChar =
-                  remoteChars.find((c) => c.id === preferredId) || remoteChars[0];
-                setActiveCharacterIdInStorage(user.uid, targetChar.id);
-                applyCharacterProfileToState(targetChar);
-              }
-              setCloudSaveStatus('saved');
-            } else if (!initialRemoteHydrated) {
-              initialRemoteHydrated = true;
-              // Migrate current guest characters into the signed-in Google account!
-              const guestChars = loadLocalCharacters('local_guest');
-              const migrated = (
-                guestChars.length > 0
-                  ? guestChars
-                  : [
-                      createDefaultCharacterProfile(
-                        user.uid,
-                        user.displayName || 'Магистр Арканума',
-                        getOrCreateGuestDeviceId()
-                      ),
-                    ]
-              ).map((c) => sanitizeCharacterProfile({ ...c, ownerId: user.uid }, user.uid));
-              setCharacters(migrated);
-              saveLocalCharacters(user.uid, migrated);
-              setActiveCharacterIdInStorage(user.uid, migrated[0].id);
-              applyCharacterProfileToState(migrated[0]);
-              Promise.all(
-                migrated.map((c) =>
-                  Promise.all([
-                    saveCharacterToFirestore(user.uid, c),
-                    savePlayerProfileToFirestore(c),
-                  ])
-                )
-              )
-                .then(() => setCloudSaveStatus('saved'))
-                .catch(() => setCloudSaveStatus('error'));
-            }
-          },
-          () => {
-            setCloudSaveStatus('error');
-          }
-        );
-      } else {
-        const guestChars = loadLocalCharacters('local_guest');
-        const list =
-          guestChars.length > 0
-            ? guestChars
-            : [
-                createDefaultCharacterProfile(
-                  'local_guest',
-                  'Магистр Арканума',
-                  getOrCreateGuestDeviceId()
-                ),
-              ];
-        setCharacters(list);
-        const preferredId = getActiveCharacterIdFromStorage('local_guest');
-        const target = list.find((c) => c.id === preferredId) || list[0];
-        applyCharacterProfileToState(target);
-        setCloudSaveStatus('idle');
-      }
-    });
-
-    return () => {
-      unsubAuth();
-      if (unsubFirestore) unsubFirestore();
-    };
-  }, [applyCharacterProfileToState]);
 
   const charactersRef = useRef<CharacterProfileData[]>(characters);
   charactersRef.current = characters;
@@ -679,7 +585,7 @@ export default function App() {
 
   // Build current active character profile snapshot & auto-persist to localStorage + Firestore
   const buildCurrentCharacterSnapshot = useCallback((): CharacterProfileData => {
-    const owner = authUser?.uid || 'local_guest';
+    const owner = 'local_guest';
     const currentHighestStage = getUnlockedStageForDifficulty(
       { unlockedStageD1, unlockedStageD2 },
       selectedDifficulty
@@ -722,7 +628,6 @@ export default function App() {
       owner
     );
   }, [
-    authUser,
     unlockedStageD1,
     unlockedStageD2,
     selectedDifficulty,
@@ -743,7 +648,7 @@ export default function App() {
 
   useEffect(() => {
     if (isApplyingCharacterRef.current) return;
-    const owner = authUser?.uid || 'local_guest';
+    const owner = 'local_guest';
     const updatedSnap = buildCurrentCharacterSnapshot();
     setCharacters((prev) => {
       const exists = prev.some((c) => c.id === updatedSnap.id);
@@ -757,18 +662,13 @@ export default function App() {
 
     setCloudSaveStatus('saving');
     const timer = window.setTimeout(() => {
-      const writes: Promise<void>[] = [savePlayerProfileToFirestore(updatedSnap)];
-      if (authUser) {
-        writes.push(saveCharacterToFirestore(authUser.uid, updatedSnap));
-      }
-      Promise.all(writes)
+      savePlayerProfileToFirestore(updatedSnap)
         .then(() => setCloudSaveStatus('saved'))
         .catch(() => setCloudSaveStatus('error'));
     }, 550);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    authUser,
     activeCharacterId,
     pvpPlayerName,
     playerLevel,
@@ -787,7 +687,7 @@ export default function App() {
   ]);
 
   const handleManualSaveCharacter = useCallback(async () => {
-    const owner = authUser?.uid || 'local_guest';
+    const owner = 'local_guest';
     const snap = buildCurrentCharacterSnapshot();
     setCharacters((prev) => {
       const exists = prev.some((c) => c.id === snap.id);
@@ -800,26 +700,23 @@ export default function App() {
     try {
       setCloudSaveStatus('saving');
       await savePlayerProfileToFirestore(snap);
-      if (authUser) {
-        await saveCharacterToFirestore(authUser.uid, snap);
-      }
       setCloudSaveStatus('saved');
       showToast(`☁️ Профиль «${snap.name}» сохранён в облаке Firestore!`);
     } catch {
       setCloudSaveStatus('error');
       showToast(`💾 Персонаж «${snap.name}» сохранён локально!`);
     }
-  }, [authUser, buildCurrentCharacterSnapshot, showToast]);
+  }, [buildCurrentCharacterSnapshot, showToast]);
 
   const handleCreateNewCharacter = useCallback(
     async (customName?: string) => {
-      const owner = authUser?.uid || 'local_guest';
+      const owner = 'local_guest';
       const cleanName =
         (customName ?? newCharNameInput).trim() ||
         `Маг Арканума #${characters.length + 1}`;
       const baseKey = normalizePlayerProfileKey(cleanName);
       const existsLocally = characters.some((c) => c.id === baseKey);
-      let targetId = existsLocally
+      const targetId = existsLocally
         ? `${baseKey}_${Math.random().toString(36).slice(2, 6)}`.slice(0, 64)
         : baseKey;
 
@@ -838,9 +735,7 @@ export default function App() {
             setActiveCharacterIdInStorage(owner, hydrated.id);
             setNewCharNameInput('');
             applyCharacterProfileToState(hydrated);
-            if (authUser) {
-              void saveCharacterToFirestore(authUser.uid, hydrated).catch(() => {});
-            }
+            setCloudSaveStatus('saved');
             showToast(
               `☁️ Загружен профиль «${hydrated.name}» из Firestore (Ур. ${hydrated.playerLevel})!`
             );
@@ -861,21 +756,18 @@ export default function App() {
       try {
         setCloudSaveStatus('saving');
         await savePlayerProfileToFirestore(created);
-        if (authUser) {
-          await saveCharacterToFirestore(authUser.uid, created);
-        }
         setCloudSaveStatus('saved');
       } catch {
         setCloudSaveStatus('error');
       }
       showToast(`✨ Создан новый персонаж: «${created.name}» (Ур. 1) и сохранён в Firestore!`);
     },
-    [authUser, newCharNameInput, characters, applyCharacterProfileToState, showToast]
+    [newCharNameInput, characters, applyCharacterProfileToState, showToast]
   );
 
   const handleLoadCharacterByNameOrCode = useCallback(
     async (customNameOrCode?: string) => {
-      const owner = authUser?.uid || 'local_guest';
+      const owner = 'local_guest';
       const queryInput = (customNameOrCode ?? newCharNameInput).trim();
       if (!queryInput) {
         showToast('Введите имя или код игрока для загрузки из Firestore.');
@@ -896,9 +788,7 @@ export default function App() {
         setActiveCharacterIdInStorage(owner, hydrated.id);
         setNewCharNameInput('');
         applyCharacterProfileToState(hydrated);
-        if (authUser) {
-          void saveCharacterToFirestore(authUser.uid, hydrated).catch(() => {});
-        }
+        setCloudSaveStatus('saved');
         showToast(
           `☁️ Профиль «${hydrated.name}» (Ур. ${hydrated.playerLevel}) загружен из Firestore!`
         );
@@ -906,12 +796,12 @@ export default function App() {
         showToast('⚠️ Не удалось загрузить профиль из Firestore.');
       }
     },
-    [authUser, newCharNameInput, applyCharacterProfileToState, showToast]
+    [newCharNameInput, applyCharacterProfileToState, showToast]
   );
 
   const handleSwitchCharacter = useCallback(
     (charId: string) => {
-      const owner = authUser?.uid || 'local_guest';
+      const owner = 'local_guest';
       const target = characters.find((c) => c.id === charId);
       if (!target) return;
       setActiveCharacterIdInStorage(owner, target.id);
@@ -936,12 +826,12 @@ export default function App() {
         )}/5)`
       );
     },
-    [authUser, characters, applyCharacterProfileToState, showToast]
+    [characters, applyCharacterProfileToState, showToast]
   );
 
   const handleDeleteCharacter = useCallback(
     async (charId: string) => {
-      const owner = authUser?.uid || 'local_guest';
+      const owner = 'local_guest';
       const target = characters.find((c) => c.id === charId);
       const remaining = characters.filter((c) => c.id !== charId);
       let nextList = remaining;
@@ -961,15 +851,12 @@ export default function App() {
       }
       try {
         await deletePlayerProfileFromFirestore(charId);
-        if (authUser) {
-          await deleteCharacterFromFirestore(authUser.uid, charId);
-        }
       } catch {
         // Ignore delete errors if offline
       }
       showToast(`🗑️ Персонаж «${target?.name || charId}» удалён!`);
     },
-    [authUser, characters, activeCharacterId, applyCharacterProfileToState, showToast]
+    [characters, activeCharacterId, applyCharacterProfileToState, showToast]
   );
 
   const handleSelectDifficultyTier = useCallback(
@@ -987,26 +874,6 @@ export default function App() {
     },
     [highestUnlockedDifficulty, showToast]
   );
-
-  const handleGoogleSignIn = useCallback(async () => {
-    try {
-      const user = await signInWithGooglePopup();
-      showToast(`☁️ Вы вошли в аккаунт: ${user.displayName || user.email || 'Маг'}!`);
-    } catch {
-      showToast(
-        '⚠️ Окно входа Google закрыто или заблокировано браузером. Прогресс сохраняется локально на устройстве.'
-      );
-    }
-  }, [showToast]);
-
-  const handleGoogleSignOut = useCallback(async () => {
-    try {
-      await signOutUser();
-      showToast('Вы вышли из облачного аккаунта.');
-    } catch {
-      // Ignore
-    }
-  }, [showToast]);
 
   // Selecting a different spell while Arcane Sword is active immediately dismisses the sword!
   // ("Если меняешь заклинание или рисуешь заклинание, меч сразу исчезает")
@@ -1588,7 +1455,7 @@ export default function App() {
     });
     voiceRef.current = recognizer;
 
-    connectMultiplayerRoom('arena-1', stateRef.current.pvpPlayerName || 'Магистр Арканума');
+    connectMultiplayerRoom('arcanum-1', stateRef.current.pvpPlayerName || 'Магистр Арканума');
 
     const handleBeforeUnload = () => {
       roomSessionRef.current?.dispose();
@@ -4779,18 +4646,14 @@ export default function App() {
               </button>
             </div>
 
-            {/* Google Account & Cloud Save Section */}
+            {/* Direct Cloud Firestore Save Section (No Auth Popup Required) */}
             <div className="p-4 rounded-xl bg-[#1b1729] border border-[#3b3154] flex flex-wrap items-center justify-between gap-3">
               <div className="space-y-1">
                 <div className="text-sm font-bold text-white">
-                  {authUser
-                    ? `☁️ Аккаунт Google: ${authUser.displayName || authUser.email}`
-                    : '💾 Локальный режим (без входа в Google)'}
+                  ☁️ Облачное сохранение Firestore ({cloudSaveStatus === 'saved' ? 'Синхронизировано' : cloudSaveStatus === 'saving' ? 'Сохранение...' : 'Локальный кэш + Firestore'})
                 </div>
                 <div className="text-xs text-[#a39bb5]">
-                  {authUser
-                    ? 'Все персонажи, открытые этапы (1–5) и сложность автоматически синхронизируются с облаком.'
-                    : 'Войдите через Google, чтобы привязать персонажей к своему облачному аккаунту.'}
+                  Прогресс привязан к имени/коду профиля и автоматически сохраняется в Cloud Firestore без входа в Google.
                 </div>
               </div>
               <div className="flex items-center gap-2">
@@ -4801,23 +4664,6 @@ export default function App() {
                 >
                   💾 Сохранить прокачку
                 </button>
-                {authUser ? (
-                  <button
-                    type="button"
-                    onClick={handleGoogleSignOut}
-                    className="px-3 py-2 rounded-lg bg-[#2a1219] hover:bg-[#3d1a24] border border-[#f43f5e] text-xs font-bold text-[#fda4af] cursor-pointer"
-                  >
-                    Выйти из аккаунта
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={handleGoogleSignIn}
-                    className="px-3.5 py-2 rounded-lg bg-[#0284c7] hover:bg-[#0369a1] text-xs font-bold text-white cursor-pointer"
-                  >
-                    🔑 Войти через Google
-                  </button>
-                )}
               </div>
             </div>
 

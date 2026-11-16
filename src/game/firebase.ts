@@ -1,13 +1,5 @@
 import { initializeApp } from 'firebase/app';
 import {
-  getAuth,
-  GoogleAuthProvider,
-  signInWithPopup,
-  signOut as firebaseSignOut,
-  onAuthStateChanged,
-  type User,
-} from 'firebase/auth';
-import {
   getFirestore,
   doc,
   getDoc,
@@ -45,11 +37,7 @@ import type { RemotePlayerState, SharedWorldEventPayload } from './world3d';
 
 // Initialize Firebase SDK from firebase-applet-config.json
 const app = initializeApp(firebaseConfig);
-export const auth = getAuth(app);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
-
-const googleProvider = new GoogleAuthProvider();
-googleProvider.setCustomParameters({ prompt: 'select_account' });
 
 export enum OperationType {
   CREATE = 'create',
@@ -87,18 +75,12 @@ export function handleFirestoreError(
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
-      providerInfo:
-        auth.currentUser?.providerData.map((provider) => ({
-          providerId: provider.providerId,
-          displayName: provider.displayName,
-          email: provider.email,
-          photoUrl: provider.photoURL,
-        })) || [],
+      userId: undefined,
+      email: null,
+      emailVerified: false,
+      isAnonymous: false,
+      tenantId: null,
+      providerInfo: [],
     },
     operationType,
     path,
@@ -449,113 +431,6 @@ function buildCharacterMutableFields(sanitized: CharacterProfileData) {
 }
 
 // ============================================================================
-// AUTHENTICATION HELPERS
-// ============================================================================
-export async function signInWithGooglePopup(): Promise<User> {
-  const credential = await signInWithPopup(auth, googleProvider);
-  return credential.user;
-}
-
-export async function signOutUser(): Promise<void> {
-  await firebaseSignOut(auth);
-}
-
-export function subscribeToAuthChanges(callback: (user: User | null) => void): Unsubscribe {
-  return onAuthStateChanged(auth, callback);
-}
-
-// ============================================================================
-// FIRESTORE CHARACTER PERSISTENCE (Google Auth Users)
-// ============================================================================
-export async function saveCharacterToFirestore(
-  userId: string,
-  profile: CharacterProfileData
-): Promise<void> {
-  const sanitized = sanitizeCharacterProfile({ ...profile, ownerId: userId }, userId);
-  const path = `users/${userId}/characters/${sanitized.id}`;
-  const charRef = doc(db, 'users', userId, 'characters', sanitized.id);
-  const mutableFields = buildCharacterMutableFields(sanitized);
-
-  try {
-    const existingSnap = await getDoc(charRef);
-    if (existingSnap.exists() && existingSnap.data()?.createdAt) {
-      await updateDoc(charRef, {
-        ...mutableFields,
-        updatedAt: serverTimestamp(),
-      });
-    } else {
-      await setDoc(charRef, {
-        id: sanitized.id,
-        ownerId: userId,
-        ...mutableFields,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    }
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, path);
-  }
-}
-
-export async function deleteCharacterFromFirestore(
-  userId: string,
-  characterId: string
-): Promise<void> {
-  const path = `users/${userId}/characters/${characterId}`;
-  const charRef = doc(db, 'users', userId, 'characters', characterId);
-  try {
-    await deleteDoc(charRef);
-  } catch (error) {
-    handleFirestoreError(error, OperationType.DELETE, path);
-  }
-}
-
-export function subscribeToUserCharacters(
-  userId: string,
-  onCharacters: (characters: CharacterProfileData[]) => void,
-  onError?: (err: Error) => void
-): Unsubscribe {
-  const path = `users/${userId}/characters`;
-  const colRef = collection(db, 'users', userId, 'characters');
-  const charsQuery = query(colRef, where('ownerId', '==', userId));
-  return onSnapshot(
-    charsQuery,
-    (snapshot) => {
-      const list: CharacterProfileData[] = [];
-      snapshot.forEach((docSnap) => {
-        const data = docSnap.data();
-        const updatedAtMs =
-          data.updatedAt && typeof data.updatedAt.toMillis === 'function'
-            ? data.updatedAt.toMillis()
-            : Date.now();
-        list.push(
-          sanitizeCharacterProfile(
-            {
-              ...data,
-              id: docSnap.id,
-              ownerId: userId,
-              updatedAtMs,
-            },
-            userId
-          )
-        );
-      });
-      list.sort((a, b) => b.updatedAtMs - a.updatedAtMs);
-      onCharacters(list);
-    },
-    (error) => {
-      try {
-        handleFirestoreError(error, OperationType.LIST, path);
-      } catch (handledErr) {
-        if (onError && handledErr instanceof Error) {
-          onError(handledErr);
-        }
-      }
-    }
-  );
-}
-
-// ============================================================================
 // FIRESTORE PLAYER_PROFILES PERSISTENCE (By Player Name / Code, Reload-Safe)
 // ============================================================================
 export async function savePlayerProfileToFirestore(
@@ -569,7 +444,12 @@ export async function savePlayerProfileToFirestore(
 
   try {
     const existingSnap = await getDoc(profRef);
-    if (existingSnap.exists() && existingSnap.data()?.createdAt) {
+    const existingData = existingSnap.data();
+    if (
+      existingSnap.exists() &&
+      existingData?.createdAt &&
+      existingData?.profileKey === profileId
+    ) {
       await updateDoc(profRef, {
         ownerId: sanitized.ownerId,
         ...mutableFields,
@@ -984,6 +864,17 @@ export function connectFirestoreRoom(
 
   const unsubscribers: Unsubscribe[] = [];
 
+  const handleRoomSnapshotError = (error: unknown, operationType: OperationType, path: string) => {
+    if (!disposed) {
+      opts.onConnectedChange(false);
+    }
+    try {
+      handleFirestoreError(error, operationType, path);
+    } catch {
+      // Handled cleanly without uncaught snapshot listener exceptions
+    }
+  };
+
   // 1. Room Document Listener (mode, game start, stage advance, all-dead reset, duel reset)
   unsubscribers.push(
     onSnapshot(
@@ -1059,8 +950,8 @@ export function connectFirestoreRoom(
           opts.onDuelReset();
         }
       },
-      () => {
-        if (!disposed) opts.onConnectedChange(false);
+      (error) => {
+        handleRoomSnapshotError(error, OperationType.GET, `rooms/${roomId}`);
       }
     )
   );
@@ -1071,46 +962,52 @@ export function connectFirestoreRoom(
     where('roomId', '==', roomId)
   );
   unsubscribers.push(
-    onSnapshot(playersQuery, (snapshot) => {
-      if (disposed) return;
-      const now = Date.now();
-      const list: RemotePlayerState[] = [];
-      const nextDead = new Set<string>();
+    onSnapshot(
+      playersQuery,
+      (snapshot) => {
+        if (disposed) return;
+        const now = Date.now();
+        const list: RemotePlayerState[] = [];
+        const nextDead = new Set<string>();
 
-      snapshot.forEach((docSnap) => {
-        const d = docSnap.data();
-        const lastSeen = Number(d.lastSeenMs) || 0;
-        // Filter out stale disconnected peers (> 25s without heartbeat)
-        if (docSnap.id !== selfId && now - lastSeen > 25000) {
-          return;
-        }
-        const deadFlag = Boolean(d.isDead);
-        if (deadFlag) {
-          nextDead.add(docSnap.id);
-          if (docSnap.id !== selfId && !activeDeadIds.has(docSnap.id)) {
-            opts.onPlayerDowned(docSnap.id);
+        snapshot.forEach((docSnap) => {
+          const d = docSnap.data();
+          const lastSeen = Number(d.lastSeenMs) || 0;
+          // Filter out stale disconnected peers (> 25s without heartbeat)
+          if (docSnap.id !== selfId && now - lastSeen > 25000) {
+            return;
           }
-        }
-        list.push({
-          id: docSnap.id,
-          name: String(d.name || 'Арканист'),
-          x: Number(d.x) || 0,
-          y: Number(d.y) || 0,
-          z: Number(d.z) || 0,
-          rotY: Number(d.rotY) || 0,
-          hp: Number(d.hp) ?? 100,
-          maxHp: Number(d.maxHp) || 100,
-          level: Number(d.level) || 1,
-          staffId: String(d.staffId || 'wand_ollivander'),
-          shieldActive: Boolean(d.shieldActive),
-          wins: Number(d.wins) || 0,
+          const deadFlag = Boolean(d.isDead);
+          if (deadFlag) {
+            nextDead.add(docSnap.id);
+            if (docSnap.id !== selfId && !activeDeadIds.has(docSnap.id)) {
+              opts.onPlayerDowned(docSnap.id);
+            }
+          }
+          list.push({
+            id: docSnap.id,
+            name: String(d.name || 'Арканист'),
+            x: Number(d.x) || 0,
+            y: Number(d.y) || 0,
+            z: Number(d.z) || 0,
+            rotY: Number(d.rotY) || 0,
+            hp: Number(d.hp) ?? 100,
+            maxHp: Number(d.maxHp) || 100,
+            level: Number(d.level) || 1,
+            staffId: String(d.staffId || 'wand_ollivander'),
+            shieldActive: Boolean(d.shieldActive),
+            wins: Number(d.wins) || 0,
+          });
         });
-      });
 
-      activePlayersCache = list;
-      activeDeadIds = nextDead;
-      opts.onPlayersSync(list);
-    })
+        activePlayersCache = list;
+        activeDeadIds = nextDead;
+        opts.onPlayersSync(list);
+      },
+      (error) => {
+        handleRoomSnapshotError(error, OperationType.LIST, `rooms/${roomId}/players`);
+      }
+    )
   );
 
   // 3. Shared Room Enemies Listener (hits + periodic enemy sync)
@@ -1119,79 +1016,85 @@ export function connectFirestoreRoom(
     where('roomId', '==', roomId)
   );
   unsubscribers.push(
-    onSnapshot(enemiesQuery, (snapshot) => {
-      if (disposed || currentLabyrinthMode !== 'shared') return;
+    onSnapshot(
+      enemiesQuery,
+      (snapshot) => {
+        if (disposed || currentLabyrinthMode !== 'shared') return;
 
-      const syncRecords: Array<{
-        id: string;
-        hp: number;
-        maxHp: number;
-        x: number;
-        y: number;
-        z: number;
-        state: string;
-        killed: boolean;
-      }> = [];
-      let syncStage = currentLabyrinthStage;
+        const syncRecords: Array<{
+          id: string;
+          hp: number;
+          maxHp: number;
+          x: number;
+          y: number;
+          z: number;
+          state: string;
+          killed: boolean;
+        }> = [];
+        let syncStage = currentLabyrinthStage;
 
-      snapshot.docChanges().forEach((change) => {
-        if (change.type === 'removed') return;
-        const d = change.doc.data();
-        const docEpoch = Number(d.stageEpoch) || 1;
-        if (docEpoch !== currentStageEpoch) return;
+        snapshot.docChanges().forEach((change) => {
+          if (change.type === 'removed') return;
+          const d = change.doc.data();
+          const docEpoch = Number(d.stageEpoch) || 1;
+          if (docEpoch !== currentStageEpoch) return;
 
-        const stage = Number(d.stage) || 1;
-        const lastHitId = String(d.lastHitId || '');
-        const lastAttackerId = String(d.lastAttackerId || '');
-        if (
-          lastHitId &&
-          lastAttackerId &&
-          lastAttackerId !== selfId &&
-          !rememberId(processedHitIds, lastHitId)
-        ) {
-          opts.onEnemyDamaged({
-            enemyId: String(d.id || change.doc.id),
-            stage,
-            hp: Number(d.hp) ?? 0,
-            maxHp: Number(d.maxHp) || 100,
-            damage: Number(d.lastDamage) || 0,
-            attackerId: lastAttackerId,
-            spellId: String(d.lastSpellId || 'incendio'),
-            stunSec: Number(d.lastStunSec) || 0,
-            freezeSec: Number(d.lastFreezeSec) || 0,
-            killed: Boolean(d.killed),
-            x: Number(d.x) || 0,
-            z: Number(d.z) || 0,
-          });
-        }
-
-        if (String(d.senderId || '') !== selfId) {
-          const sig = `${d.hp}_${d.x}_${d.z}_${d.state}_${d.killed}`;
-          if (lastEnemySnapshotMap.get(change.doc.id) !== sig) {
-            lastEnemySnapshotMap.set(change.doc.id, sig);
-            syncStage = stage;
-            syncRecords.push({
-              id: String(d.id || change.doc.id),
+          const stage = Number(d.stage) || 1;
+          const lastHitId = String(d.lastHitId || '');
+          const lastAttackerId = String(d.lastAttackerId || '');
+          if (
+            lastHitId &&
+            lastAttackerId &&
+            lastAttackerId !== selfId &&
+            !rememberId(processedHitIds, lastHitId)
+          ) {
+            opts.onEnemyDamaged({
+              enemyId: String(d.id || change.doc.id),
+              stage,
               hp: Number(d.hp) ?? 0,
               maxHp: Number(d.maxHp) || 100,
-              x: Number(d.x) || 0,
-              y: Number(d.y) || 0,
-              z: Number(d.z) || 0,
-              state: String(d.state || 'idle'),
+              damage: Number(d.lastDamage) || 0,
+              attackerId: lastAttackerId,
+              spellId: String(d.lastSpellId || 'incendio'),
+              stunSec: Number(d.lastStunSec) || 0,
+              freezeSec: Number(d.lastFreezeSec) || 0,
               killed: Boolean(d.killed),
+              x: Number(d.x) || 0,
+              z: Number(d.z) || 0,
             });
           }
-        }
-      });
 
-      if (syncRecords.length > 0) {
-        opts.onEnemySynced({
-          stage: syncStage,
-          senderId: 'remote',
-          enemies: syncRecords,
+          if (String(d.senderId || '') !== selfId) {
+            const sig = `${d.hp}_${d.x}_${d.z}_${d.state}_${d.killed}`;
+            if (lastEnemySnapshotMap.get(change.doc.id) !== sig) {
+              lastEnemySnapshotMap.set(change.doc.id, sig);
+              syncStage = stage;
+              syncRecords.push({
+                id: String(d.id || change.doc.id),
+                hp: Number(d.hp) ?? 0,
+                maxHp: Number(d.maxHp) || 100,
+                x: Number(d.x) || 0,
+                y: Number(d.y) || 0,
+                z: Number(d.z) || 0,
+                state: String(d.state || 'idle'),
+                killed: Boolean(d.killed),
+              });
+            }
+          }
         });
+
+        if (syncRecords.length > 0) {
+          opts.onEnemySynced({
+            stage: syncStage,
+            senderId: 'remote',
+            enemies: syncRecords,
+          });
+        }
+      },
+      (error) => {
+        handleRoomSnapshotError(error, OperationType.LIST, `rooms/${roomId}/enemies`);
       }
-    })
+    )
   );
 
   // 4. Room Ephemeral Events Listener (spell_cast & player_hit)
@@ -1200,44 +1103,50 @@ export function connectFirestoreRoom(
     where('roomId', '==', roomId)
   );
   unsubscribers.push(
-    onSnapshot(eventsQuery, (snapshot) => {
-      if (disposed) return;
-      snapshot.docChanges().forEach((change) => {
-        if (change.type !== 'added') return;
-        const d = change.doc.data();
-        const createdAtMs = Number(d.createdAtMs) || 0;
-        if (createdAtMs < joinedAtMs - 2000) return;
-        if (rememberId(processedEventIds, change.doc.id)) return;
+    onSnapshot(
+      eventsQuery,
+      (snapshot) => {
+        if (disposed) return;
+        snapshot.docChanges().forEach((change) => {
+          if (change.type !== 'added') return;
+          const d = change.doc.data();
+          const createdAtMs = Number(d.createdAtMs) || 0;
+          if (createdAtMs < joinedAtMs - 2000) return;
+          if (rememberId(processedEventIds, change.doc.id)) return;
 
-        const senderId = String(d.senderId || '');
-        if (d.kind === 'spell_cast' && senderId !== selfId) {
-          opts.onSpellSpawned({
-            casterId: senderId,
-            spellId: String(d.spellId || 'incendio'),
-            power: Number(d.power) || 25,
-            accuracy: Number(d.accuracy) || 80,
-            origin: {
-              x: Number(d.originX) || 0,
-              y: Number(d.originY) || 1.5,
-              z: Number(d.originZ) || 0,
-            },
-            direction: {
-              x: Number(d.dirX) || 0,
-              y: Number(d.dirY) || 0,
-              z: Number(d.dirZ) || -1,
-            },
-            color: String(d.color || '#f97316'),
-          });
-        } else if (d.kind === 'player_hit' && String(d.targetId || '') === selfId) {
-          opts.onPlayerDamaged({
-            targetId: selfId,
-            attackerId: senderId,
-            attackerName: String(d.senderName || 'Союзник'),
-            damage: Number(d.damage) || 20,
-          });
-        }
-      });
-    })
+          const senderId = String(d.senderId || '');
+          if (d.kind === 'spell_cast' && senderId !== selfId) {
+            opts.onSpellSpawned({
+              casterId: senderId,
+              spellId: String(d.spellId || 'incendio'),
+              power: Number(d.power) || 25,
+              accuracy: Number(d.accuracy) || 80,
+              origin: {
+                x: Number(d.originX) || 0,
+                y: Number(d.originY) || 1.5,
+                z: Number(d.originZ) || 0,
+              },
+              direction: {
+                x: Number(d.dirX) || 0,
+                y: Number(d.dirY) || 0,
+                z: Number(d.dirZ) || -1,
+              },
+              color: String(d.color || '#f97316'),
+            });
+          } else if (d.kind === 'player_hit' && String(d.targetId || '') === selfId) {
+            opts.onPlayerDamaged({
+              targetId: selfId,
+              attackerId: senderId,
+              attackerName: String(d.senderName || 'Союзник'),
+              damage: Number(d.damage) || 20,
+            });
+          }
+        });
+      },
+      (error) => {
+        handleRoomSnapshotError(error, OperationType.LIST, `rooms/${roomId}/events`);
+      }
+    )
   );
 
   // 5. Room Shared World Events Listener (walls, campfires, chests, traps, harvests, props)
@@ -1246,37 +1155,43 @@ export function connectFirestoreRoom(
     where('roomId', '==', roomId)
   );
   unsubscribers.push(
-    onSnapshot(worldEventsQuery, (snapshot) => {
-      if (disposed || currentLabyrinthMode !== 'shared') return;
-      snapshot.docChanges().forEach((change) => {
-        if (change.type === 'removed') return;
-        const d = change.doc.data();
-        const docEpoch = Number(d.stageEpoch) || 1;
-        if (docEpoch !== currentStageEpoch) return;
-        if (String(d.senderId || '') === selfId) return;
+    onSnapshot(
+      worldEventsQuery,
+      (snapshot) => {
+        if (disposed || currentLabyrinthMode !== 'shared') return;
+        snapshot.docChanges().forEach((change) => {
+          if (change.type === 'removed') return;
+          const d = change.doc.data();
+          const docEpoch = Number(d.stageEpoch) || 1;
+          if (docEpoch !== currentStageEpoch) return;
+          if (String(d.senderId || '') === selfId) return;
 
-        const evId = String(d.eventId || change.doc.id);
-        if (d.kind !== 'prop_sync' && rememberId(processedWorldEventIds, evId)) {
-          return;
-        }
+          const evId = String(d.eventId || change.doc.id);
+          if (d.kind !== 'prop_sync' && rememberId(processedWorldEventIds, evId)) {
+            return;
+          }
 
-        opts.onWorldEvent({
-          kind: d.kind,
-          stage: Number(d.stage) || 1,
-          targetId: String(d.targetId || ''),
-          x: Number(d.x),
-          y: Number(d.y),
-          z: Number(d.z),
-          rotY: Number(d.rotY),
-          vx: Number(d.vx),
-          vy: Number(d.vy),
-          vz: Number(d.vz),
-          isHeld: Boolean(d.isHeld),
-          isThrown: Boolean(d.isThrown),
-          throwDamage: Number(d.throwDamage),
+          opts.onWorldEvent({
+            kind: d.kind,
+            stage: Number(d.stage) || 1,
+            targetId: String(d.targetId || ''),
+            x: Number(d.x),
+            y: Number(d.y),
+            z: Number(d.z),
+            rotY: Number(d.rotY),
+            vx: Number(d.vx),
+            vy: Number(d.vy),
+            vz: Number(d.vz),
+            isHeld: Boolean(d.isHeld),
+            isThrown: Boolean(d.isThrown),
+            throwDamage: Number(d.throwDamage),
+          });
         });
-      });
-    })
+      },
+      (error) => {
+        handleRoomSnapshotError(error, OperationType.LIST, `rooms/${roomId}/world_events`);
+      }
+    )
   );
 
   // Heartbeat keep-alive every 6s so active peers stay visible even when idle
