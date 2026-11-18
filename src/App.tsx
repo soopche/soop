@@ -349,6 +349,9 @@ export default function App() {
   const [hudHideStep, setHudHideStep] = useState<0 | 1 | 2 | 3 | 4>(0);
   const [radarVisible, setRadarVisible] = useState(true);
   const radarCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(() =>
+    typeof document !== 'undefined' ? Boolean(document.fullscreenElement) : false
+  );
   const [showControlsHelp, setShowControlsHelp] = useState(
     initialAutoStart && initialModeParam === 'labyrinth'
   );
@@ -1742,6 +1745,35 @@ export default function App() {
     [showToast]
   );
 
+  const toggleFullscreen = useCallback(() => {
+    if (typeof document === 'undefined') return;
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen?.().catch(() => {});
+    } else {
+      document.exitFullscreen?.().catch(() => {});
+    }
+  }, []);
+
+  useEffect(() => {
+    const onFsChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+    document.addEventListener('fullscreenchange', onFsChange);
+    return () => document.removeEventListener('fullscreenchange', onFsChange);
+  }, []);
+
+  useEffect(() => {
+    if (gameState !== 'title') return;
+    const onFirstTitlePointer = (e: PointerEvent) => {
+      if (document.fullscreenElement) return;
+      const target = e.target instanceof HTMLElement ? e.target : null;
+      if (target?.closest('[data-testid="title-fullscreen-btn"]')) return;
+      document.documentElement.requestFullscreen?.().catch(() => {});
+    };
+    window.addEventListener('pointerdown', onFirstTitlePointer, { once: true });
+    return () => window.removeEventListener('pointerdown', onFirstTitlePointer);
+  }, [gameState]);
+
   const handleStartGameWithMode = useCallback(
     (
       targetMode: GameMapMode,
@@ -1750,6 +1782,9 @@ export default function App() {
     ) => {
       if (document.activeElement instanceof HTMLElement) {
         document.activeElement.blur();
+      }
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen?.().catch(() => {});
       }
       if (customLabyrinthMpMode) {
         setLabyrinthMultiplayerMode(customLabyrinthMpMode);
@@ -3304,6 +3339,18 @@ export default function App() {
           }}
         >
           <div className="max-w-2xl my-auto space-y-4 pointer-events-auto">
+            {!isFullscreen && (
+              <button
+                type="button"
+                data-testid="title-fullscreen-btn"
+                onClick={toggleFullscreen}
+                className="w-full px-4 py-2.5 rounded-xl border-2 border-[#fde047] bg-gradient-to-r from-[#1e1b2e]/95 via-[#132638]/95 to-[#2b1f10]/95 text-xs sm:text-sm font-bold text-[#fde047] hover:text-white hover:border-[#38bdf8] shadow-[0_0_20px_rgba(56,189,248,0.35)] transition-all cursor-pointer flex items-center justify-center gap-2 text-center animate-pulse"
+              >
+                <span>
+                  🖥️ Для лучшего обзора нажмите <span className="text-[#38bdf8]">[F11]</span> или кликните сюда — ПОЛНЫЙ ЭКРАН [⛶]
+                </span>
+              </button>
+            )}
             <div className="space-y-2">
               <svg
                 viewBox="0 0 420 110"
@@ -4902,6 +4949,20 @@ export default function App() {
                 className="w-full py-3 text-sm font-bold bg-[#f59e0b] hover:bg-[#fbbf24] text-[#09080d] rounded-lg transition-colors cursor-pointer"
               >
                 Продолжить [Esc]
+              </button>
+              <button
+                type="button"
+                data-testid="pause-fullscreen-btn"
+                onClick={toggleFullscreen}
+                className={`w-full py-2.5 text-xs font-bold rounded-lg border transition-colors cursor-pointer ${
+                  isFullscreen
+                    ? 'bg-[#132a1f] border-[#22c55e] text-[#bbf7d0] hover:bg-[#173628]'
+                    : 'bg-[#132638] border-[#38bdf8] text-[#bae6fd] hover:bg-[#1a344c]'
+                }`}
+              >
+                {isFullscreen
+                  ? '⛶ Полный экран [F11]: ВКЛ (Выйти)'
+                  : '⛶ Полный экран [F11]'}
               </button>
               <button
                 type="button"

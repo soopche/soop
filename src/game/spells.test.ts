@@ -283,8 +283,8 @@ test('evaluateGestureAccuracy rewards complete accurate trace including Heart fo
   assert.equal(partialEval.isComplete, false);
 });
 
-test('calculateSpellCastStats enforces 4.0s->3.0s cooldowns, Teleport 10s CD/range/damage scaling, Stupefy 4..20/5, and Lv4+ 2 projectiles', () => {
-  // 1. Quick unprepared attack shot -> strictly 2 damage, 15 MP, 4.0s cooldown at Level 1
+test('calculateSpellCastStats enforces 5.0s->4.0s cooldowns, Teleport 10s CD/range/damage scaling, Stupefy 4..20/5, and Lv4+ 2 projectiles', () => {
+  // 1. Quick unprepared attack shot -> strictly 2 damage, 15 MP, 5.0s cooldown at Level 1
   const quickShot = calculateSpellCastStats({
     spellId: 'incendio',
     castMode: 'quick',
@@ -297,7 +297,7 @@ test('calculateSpellCastStats enforces 4.0s->3.0s cooldowns, Teleport 10s CD/ran
   assert.equal(quickShot.rawBaseDamage, 2);
   assert.equal(quickShot.finalDamage, 2);
   assert.equal(quickShot.manaCost, UNIFORM_MANA_COST);
-  assert.equal(quickShot.cooldownSec, 4.0);
+  assert.equal(quickShot.cooldownSec, 5.0);
   assert.equal(quickShot.projectileCount, 1);
 
   // 2. Wingardium ("Тяни") costs 10 MP
@@ -313,12 +313,13 @@ test('calculateSpellCastStats enforces 4.0s->3.0s cooldowns, Teleport 10s CD/ran
   assert.equal(wingardiumCast.manaCost, WINGARDIUM_MANA_COST);
   assert.equal(wingardiumCast.manaCost, 10);
 
-  // 3. Cooldown scales from 4.0s (Level 1) down to 3.0s (Level 5), and Level 4+ fires 2 projectiles for combat spells
-  assert.equal(getSpellCooldownForLevel('incendio', 1), 4.0);
-  assert.equal(getSpellCooldownForLevel('incendio', 2), 3.75);
-  assert.equal(getSpellCooldownForLevel('incendio', 3), 3.5);
-  assert.equal(getSpellCooldownForLevel('incendio', 4), 3.25);
-  assert.equal(getSpellCooldownForLevel('incendio', 5), 3.0);
+  // 3. Cooldown scales from 5.0s (Level 1) down to 4.0s (Level 5) and 3.75s (Level 6), and Level 4+ fires 2 projectiles for combat spells
+  assert.equal(getSpellCooldownForLevel('incendio', 1), 5.0);
+  assert.equal(getSpellCooldownForLevel('incendio', 2), 4.75);
+  assert.equal(getSpellCooldownForLevel('incendio', 3), 4.5);
+  assert.equal(getSpellCooldownForLevel('incendio', 4), 4.25);
+  assert.equal(getSpellCooldownForLevel('incendio', 5), 4.0);
+  assert.equal(getSpellCooldownForLevel('incendio', 6), 3.75);
 
   const lv1FireVoice = calculateSpellCastStats({
     spellId: 'incendio',
@@ -353,7 +354,7 @@ test('calculateSpellCastStats enforces 4.0s->3.0s cooldowns, Teleport 10s CD/ran
     staffId: 'wand_ollivander',
   });
   assert.equal(lv4CombatCast.finalDamage, 22);
-  assert.equal(lv4CombatCast.cooldownSec, 3.25);
+  assert.equal(lv4CombatCast.cooldownSec, 4.25);
   assert.equal(lv4CombatCast.projectileCount, 2);
 
   // 4. Teleport ('teleport' on [Ё]): 10s base cooldown, voice gives 14 damage & medium cooldown, high-accuracy circle gives faster cooldown & higher AoE damage

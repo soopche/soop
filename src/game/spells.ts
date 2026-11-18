@@ -349,8 +349,8 @@ export interface QuestDef {
 export const UNIFORM_MANA_COST = 15;
 export const WINGARDIUM_MANA_COST = 10;
 export const SPECIAL_MANA_COST = 30;
-export const SPELL_COOLDOWN_SEC = 4.0;
-export const MIN_UPGRADED_SPELL_COOLDOWN_SEC = 3.0;
+export const SPELL_COOLDOWN_SEC = 5.0;
+export const MIN_UPGRADED_SPELL_COOLDOWN_SEC = 4.0;
 export const SPECIAL_COOLDOWN_SEC = 30.0;
 export const TELEPORT_BASE_COOLDOWN_SEC = 10.0;
 export const TELEPORT_BLAST_RADIUS = 6.0;
@@ -1354,7 +1354,7 @@ export const SPELLS: Record<SpellId, SpellDef> = {
     name: 'Инсендио',
     shortWord: 'Огонь',
     latinName: 'Incendio',
-    roleClue: 'Огненный взрыв · КД 4с→3с · 2 снаряда с 4 ур.',
+    roleClue: 'Огненный взрыв · КД 5с→4с · 2 снаряда с 4 ур.',
     description:
       'Выпускает пылающий сгусток огня, взрывающийся при столкновении с врагами, тотемами и боссами. С 4-го уровня выпускает 2 снаряда сразу!',
     voiceTriggers: ['огонь', 'жар', 'пыл', 'пламя', 'инсендио', 'инсендия', 'incendio', 'фаер'],
@@ -1378,7 +1378,7 @@ export const SPELLS: Record<SpellId, SpellDef> = {
     name: 'Вингардиум Левиоса',
     shortWord: 'Левиоса',
     latinName: 'Wingardium Leviosa',
-    roleClue: 'Телекинез · Щит и Бросок · 10 МП · КД 4с→3с',
+    roleClue: 'Телекинез · Щит и Бросок · 10 МП · КД 5с→4с',
     description:
       'Захватывает физический объект в качестве летающего щита перед вами или швыряет его во врага как снаряд. Стоит всего 10 маны.',
     voiceTriggers: [
@@ -1413,7 +1413,7 @@ export const SPELLS: Record<SpellId, SpellDef> = {
     name: 'Экспеллиармус',
     shortWord: 'Удар',
     latinName: 'Expelliarmus',
-    roleClue: 'Алый луч · Отбрасывание · КД 4с→3с · 2 снаряда с 4 ур.',
+    roleClue: 'Алый луч · Отбрасывание · КД 5с→4с · 2 снаряда с 4 ур.',
     description:
       'Мощный дуэльный луч, выбивающий защиту противника и отбрасывающий цели назад. С 4-го уровня выпускает 2 снаряда!',
     voiceTriggers: [
@@ -1445,7 +1445,7 @@ export const SPELLS: Record<SpellId, SpellDef> = {
     name: 'Остолбеней',
     shortWord: 'Стоп',
     latinName: 'Stupefy',
-    roleClue: 'Оглушение · Кирпич (▬) · Урон 4..20 (голос 5) · КД 4с→3с',
+    roleClue: 'Оглушение · Кирпич (▬) · Урон 4..20 (голос 5) · КД 5с→4с',
     description:
       'Концентрированная сфера энергии, парализующая врагов и прерывающая их замах (рисунок горизонтального прямоугольника «Кирпич», базовый урон 4..20 от рисунка, 5 от голоса). С 4-го уровня выпускает 2 снаряда!',
     voiceTriggers: ['стоп', 'сон', 'цепь', 'замри', 'кирпич', 'остолбеней', 'ступефай', 'stupefy'],
@@ -1542,7 +1542,7 @@ export const SPELLS: Record<SpellId, SpellDef> = {
     name: 'Глациус (Мороз)',
     shortWord: 'Мороз',
     latinName: 'Glacius',
-    roleClue: 'Копье Мороза · Урон 4..26 · Замедление 30% на 3с · КД 4с→3с',
+    roleClue: 'Копье Мороза · Урон 4..26 · Замедление 30% на 3с · КД 5с→4с',
     description:
       'Древнее заклинание ледяного дракона. Наносит 4..26 урона от рисунка и замедляет врагов на 30% на 3 секунды! С 4-го уровня выпускает 2 снаряда.',
     voiceTriggers: ['мороз', 'лед', 'лёд', 'хлад', 'иней', 'глациус', 'гласиус', 'glacius'],
@@ -2765,7 +2765,7 @@ export function calculateCampfireTeleportCastDuration(
  * - Heal ('vera_verto') & Growth ('engorgio'): always 30.0s (26.0s at Level 6)
  * - Teleport ('teleport'): 10.0s base at Level 1, scaling down by 0.75s per level to 6.25s at Level 6
  *   (and further reduced by drawing quality in calculateSpellCastStats!)
- * - Standard spells: 4.0s at Level 1, scaling down by 0.25s per level to 3.0s at Level 5 and 2.75s at Level 6!
+ * - Standard spells: 5.0s at Level 1, scaling down by 0.25s per level to 4.0s at Level 5 and 3.75s at Level 6!
  */
 export function getSpellCooldownForLevel(spellId: SpellId, spellLevel = 1): number {
   const clamped = Math.max(1, Math.min(MAX_SPELL_LEVEL, spellLevel));

@@ -12677,7 +12677,7 @@ export class ArcaneWorldEngine {
         };
       }
 
-      // Wingardium Leviosa Levitation (3.0s): slows movement by 70% (0.3x speed) and floats enemy in mid-air!
+      // Wingardium Leviosa Levitation (3.0s): slows movement by 40% (0.6x speed) and floats enemy in mid-air while still allowing attacks!
       const isLevitating = (enemy.levitateTimer ?? 0) > 0;
       if (isLevitating) {
         enemy.levitateTimer = Math.max(0, (enemy.levitateTimer ?? 0) - dt);
@@ -12699,9 +12699,9 @@ export class ArcaneWorldEngine {
         continue;
       }
 
-      // Glacius slows enemies by 30% (GLACIUS_SLOW_FACTOR = 0.7) for 3 seconds; Levitation slows movement by 70% (0.3x)!
+      // Glacius slows enemies by 30% (GLACIUS_SLOW_FACTOR = 0.7) for 3 seconds; Levitation slows movement by 40% (0.6x)!
       const freezeFactor = enemy.freezeTimer > 0 ? GLACIUS_SLOW_FACTOR : 1.0;
-      const moveSlowFactor = freezeFactor * ((enemy.levitateTimer ?? 0) > 0 ? 0.3 : 1.0);
+      const moveSlowFactor = freezeFactor * ((enemy.levitateTimer ?? 0) > 0 ? 0.6 : 1.0);
       if (enemy.freezeTimer > 0) enemy.freezeTimer -= dt;
 
       if (enemy.archetype !== 'boss_totem' && enemy.velocity.lengthSq() > 0.01) {
