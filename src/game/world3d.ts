@@ -9,6 +9,8 @@ import {
   ARCANE_SWORD_SWING_COOLDOWN_SEC,
   shouldTriggerArcaneSwordExpiringSound,
   ControlSchemeId,
+  applyElementalSpellCombo,
+  findAimedTargetOnRay,
   ArtifactId,
   ArtifactSlot,
   BARREL_RESPAWN_SEC,
@@ -154,6 +156,16 @@ const _forward = new THREE.Vector3();
 const _right = new THREE.Vector3();
 const _dummyObj = new THREE.Object3D();
 const _color = new THREE.Color();
+const _aimDir = new THREE.Vector3();
+const _aimFlatFwd = new THREE.Vector3();
+const _aimSampleDists = [4.8, 8.2, 12.0, 16.0] as const;
+const _aimSamples = [
+  new THREE.Vector3(),
+  new THREE.Vector3(),
+  new THREE.Vector3(),
+  new THREE.Vector3(),
+  new THREE.Vector3(),
+];
 
 export type GameMapMode = 'arena' | 'labyrinth';
 
@@ -245,7 +257,7 @@ export interface HudSnapshot {
   stage0Tutorial?: {
     stepIndex: number;
     totalSteps: number;
-    phase: 1 | 2 | 3;
+    phase: 1 | 2 | 3 | 4;
     waitingForPrep: boolean;
     completed: boolean;
     prepState: Stage0PrepState;
@@ -259,6 +271,20 @@ export interface HudSnapshot {
     color: string;
     timestamp: number;
   } | null;
+  radar: HudRadarSnapshot | null;
+}
+
+export interface HudRadarSnapshot {
+  mapMode: GameMapMode;
+  stage: LabyrinthStageId;
+  playerX: number;
+  playerZ: number;
+  playerYaw: number;
+  goalPortal: { x: number; z: number } | null;
+  litCampfire: { x: number; z: number } | null;
+  unactivatedButtons: Array<{ x: number; z: number; color: string }>;
+  unopenedChests: Array<{ x: number; z: number }>;
+  remotePlayers: Array<{ x: number; z: number }>;
 }
 
 export interface RemotePlayerState {
@@ -290,6 +316,7 @@ export interface WorldCallbacks {
   onOpenCampfireCraft?: () => void;
   onStageUnlocked?: (nextStage: 1 | 2 | 3 | 4 | 5) => void;
   onWormBossDefeated?: () => void;
+  onPlayerEnemyHit?: (info: { enemyId: string; damage: number; spellId: string }) => void;
   onGameOver: (victory: boolean, stats: { score: number; wave: number; enemiesDefeated: number }) => void;
   onMultiplayerMove?: (pos: {
     x: number;
@@ -301,6 +328,7 @@ export interface WorldCallbacks {
     shieldActive: boolean;
   }) => void;
   onMultiplayerHit?: (targetId: string, damage: number) => void;
+  onMultiplayerHeal?: (targetId: string, healAmount: number) => void;
   onMultiplayerEnemyHit?: (payload: {
     hitId: string;
     enemyId: string;
@@ -362,6 +390,20 @@ export interface SharedWorldEventPayload {
 }
 
 export type GraphicsQuality = 'high' | 'medium' | 'ultralow';
+
+interface FloatingDamageNumber {
+  sprite: THREE.Sprite;
+  canvas: HTMLCanvasElement;
+  ctx: CanvasRenderingContext2D;
+  texture: THREE.CanvasTexture;
+  material: THREE.SpriteMaterial;
+  active: boolean;
+  age: number;
+  maxAge: number;
+  velocityY: number;
+  baseScaleX: number;
+  baseScaleY: number;
+}
 
 interface PhysicsProp {
   id: string;
@@ -482,6 +524,7 @@ interface EnemyActor {
   stateTimer: number;
   stunTimer: number;
   freezeTimer: number;
+  levitateTimer?: number;
   burnTimer: number;
   burnTickAccum: number;
   hitFlashTimer: number;
@@ -518,7 +561,7 @@ interface EnemyActor {
   leechTickAccum?: number;
   frostWindCooldown?: number;
   stage0Behavior?: Stage0TrainingBehavior;
-  stage0Phase?: 1 | 2 | 3;
+  stage0Phase?: 1 | 2 | 3 | 4;
 }
 
 interface SpellProjectile {
@@ -835,9 +878,17 @@ export class ArcaneWorldEngine {
   public testInvulnerable = false;
   public simplifiedGraphics = false;
   public graphicsQuality: GraphicsQuality = 'high';
-  public controlScheme: ControlSchemeId = 'classic';
+  public controlScheme: ControlSchemeId = 'alternative';
+  private radarEnabled = true;
   public tookDamageThisStage = false;
+  private hemiLightRef: THREE.HemisphereLight | null = null;
   private keyLightRef: THREE.DirectionalLight | null = null;
+  private rimLightRef: THREE.DirectionalLight | null = null;
+  private labyrinthTorchPositions: Array<{ x: number; y: number; z: number; phase: number }> = [];
+  private torchLightPool: THREE.PointLight[] = [];
+  private torchFlickerTime = 0;
+  private floatingDamageNumbers: FloatingDamageNumber[] = [];
+  private readonly maxFloatingDamageNumbers = 24;
 
   public activeArcaneSword: {
     remainingSec: number;
@@ -990,6 +1041,7 @@ export class ArcaneWorldEngine {
 
     const hemiLight = new THREE.HemisphereLight(0x6c92d6, 0x261e18, 0.9);
     hemiLight.position.set(0, 50, 0);
+    this.hemiLightRef = hemiLight;
     this.scene.add(hemiLight);
 
     const keyLight = new THREE.DirectionalLight(0xffe2b0, 1.65);
@@ -1012,7 +1064,16 @@ export class ArcaneWorldEngine {
 
     const rimLight = new THREE.DirectionalLight(0x38bdf8, 0.55);
     rimLight.position.set(-28, 22, -30);
+    this.rimLightRef = rimLight;
     this.scene.add(rimLight);
+
+    // Pooled unshadowed warm PointLights for nearby labyrinth wall torches (capped by graphicsQuality)
+    for (let i = 0; i < 6; i++) {
+      const torchLight = new THREE.PointLight(0xff8a24, 0, 30, 1.05);
+      torchLight.castShadow = false;
+      this.scene.add(torchLight);
+      this.torchLightPool.push(torchLight);
+    }
   }
 
   public setSimplifiedGraphics(enabled: boolean) {
@@ -1021,6 +1082,58 @@ export class ArcaneWorldEngine {
 
   public setControlScheme(scheme: ControlSchemeId) {
     this.controlScheme = scheme;
+  }
+
+  public setRadarEnabled(enabled: boolean) {
+    this.radarEnabled = enabled;
+  }
+
+  private applyAtmosphereForMapMode() {
+    const isLab = this.mapMode === 'labyrinth';
+    const toneHex = isLab ? 0x12192e : 0x0d1326;
+
+    if (this.scene.background instanceof THREE.Color) {
+      this.scene.background.setHex(toneHex);
+    } else {
+      this.scene.background = new THREE.Color(toneHex);
+    }
+
+    const fogDensity = isLab
+      ? this.graphicsQuality === 'high'
+        ? 0.009
+        : 0.014
+      : this.graphicsQuality === 'ultralow'
+      ? 0.036
+      : this.graphicsQuality === 'medium'
+      ? 0.022
+      : 0.015;
+
+    if (this.scene.fog instanceof THREE.FogExp2) {
+      this.scene.fog.color.setHex(toneHex);
+      this.scene.fog.density = fogDensity;
+    } else {
+      this.scene.fog = new THREE.FogExp2(toneHex, fogDensity);
+    }
+
+    this.scene.environmentIntensity = isLab ? 0.65 : 1.0;
+
+    if (this.hemiLightRef) {
+      if (isLab) {
+        this.hemiLightRef.color.setHex(0x6482b8);
+        this.hemiLightRef.groundColor.setHex(0x221c18);
+        this.hemiLightRef.intensity = 0.78;
+      } else {
+        this.hemiLightRef.color.setHex(0x6c92d6);
+        this.hemiLightRef.groundColor.setHex(0x261e18);
+        this.hemiLightRef.intensity = 0.9;
+      }
+    }
+    if (this.keyLightRef) {
+      this.keyLightRef.intensity = isLab ? 1.15 : 1.65;
+    }
+    if (this.rimLightRef) {
+      this.rimLightRef.intensity = 0.55;
+    }
   }
 
   public setGraphicsQuality(quality: GraphicsQuality) {
@@ -1035,9 +1148,6 @@ export class ArcaneWorldEngine {
         this.keyLightRef.castShadow = !this.isSoftwareGl;
       }
       this.camera.far = 160;
-      if (this.scene.fog instanceof THREE.FogExp2) {
-        this.scene.fog.density = 0.015;
-      }
     } else if (quality === 'medium') {
       this.renderer.setPixelRatio(Math.min(dpr, 0.85));
       this.renderer.domElement.style.imageRendering = 'auto';
@@ -1046,9 +1156,6 @@ export class ArcaneWorldEngine {
         this.keyLightRef.castShadow = false;
       }
       this.camera.far = 78;
-      if (this.scene.fog instanceof THREE.FogExp2) {
-        this.scene.fog.density = 0.022;
-      }
     } else {
       // 'ultralow' — maximum FPS mode: 0.5x internal resolution, pixelated upscale, zero shadows, aggressive frustum/fog culling
       this.renderer.setPixelRatio(0.5);
@@ -1058,10 +1165,14 @@ export class ArcaneWorldEngine {
         this.keyLightRef.castShadow = false;
       }
       this.camera.far = 44;
-      if (this.scene.fog instanceof THREE.FogExp2) {
-        this.scene.fog.density = 0.036;
-      }
     }
+
+    const maxTorchLights = quality === 'high' ? 6 : quality === 'medium' ? 4 : 0;
+    for (let i = maxTorchLights; i < this.torchLightPool.length; i++) {
+      this.torchLightPool[i].intensity = 0;
+    }
+
+    this.applyAtmosphereForMapMode();
     this.camera.updateProjectionMatrix();
     this.renderer.shadowMap.needsUpdate = true;
   }
@@ -1095,7 +1206,7 @@ export class ArcaneWorldEngine {
         const offsetX = (r % 2) * (w * 0.5);
         const x = (c * w + offsetX) % 256;
         const y = r * h;
-        const shade = 36 + ((r * 7 + c * 13) % 18);
+        const shade = 52 + ((r * 7 + c * 13) % 16);
         ctx.fillStyle = `rgb(${shade}, ${shade + 5}, ${shade + 14})`;
         ctx.beginPath();
         ctx.roundRect(x + 2, y + 2, w - 4, h - 4, 5);
@@ -1174,6 +1285,33 @@ export class ArcaneWorldEngine {
     }
   }
 
+  private disposeHierarchy(obj: THREE.Object3D) {
+    obj.traverse((child) => {
+      if (child instanceof THREE.Mesh || child instanceof THREE.Sprite) {
+        if (child instanceof THREE.Mesh && child.geometry) {
+          child.geometry.dispose();
+        }
+        const rawMat = child.material;
+        const mats = Array.isArray(rawMat) ? rawMat : [rawMat];
+        for (const m of mats) {
+          if (!m) continue;
+          const std = m as THREE.MeshStandardMaterial;
+          std.map?.dispose();
+          std.bumpMap?.dispose();
+          m.dispose();
+        }
+      }
+    });
+  }
+
+  private removeAndDisposeProjectile(index: number) {
+    const proj = this.projectiles[index];
+    if (!proj) return;
+    this.scene.remove(proj.mesh);
+    this.disposeHierarchy(proj.mesh);
+    this.projectiles.splice(index, 1);
+  }
+
   public loadMapMode(targetMode: GameMapMode, stage: LabyrinthStageId = 1, preserveChosenPet = false) {
     this.mapMode = targetMode;
     this.labyrinthStage = stage;
@@ -1190,7 +1328,8 @@ export class ArcaneWorldEngine {
         ? { ...this.savedCharacterPet }
         : null;
 
-    // Clear previous world entities
+    // Clear previous world entities and dispose their WebGL geometries/materials/textures
+    this.disposeHierarchy(this.worldContentGroup);
     while (this.worldContentGroup.children.length > 0) {
       this.worldContentGroup.remove(this.worldContentGroup.children[0]);
     }
@@ -1199,10 +1338,9 @@ export class ArcaneWorldEngine {
     this.animals = [];
     this.activeTamedPet = null;
     this.enemies = [];
-    for (const p of this.projectiles) {
-      this.scene.remove(p.mesh);
+    for (let i = this.projectiles.length - 1; i >= 0; i--) {
+      this.removeAndDisposeProjectile(i);
     }
-    this.projectiles = [];
     this.iceRainZones = [];
     this.frostWindZones = [];
     this.mudPuddles = [];
@@ -1232,6 +1370,11 @@ export class ArcaneWorldEngine {
     this.playerFearTimer = 0;
     this.tookDamageThisStage = false;
     this.labyrinthWalls = [];
+    this.labyrinthTorchPositions = [];
+    for (const tl of this.torchLightPool) {
+      tl.intensity = 0;
+    }
+    this.clearFloatingDamageNumbers();
     this.finishPortalGroup = null;
     if (this.activeArcaneSword) {
       this.dismissArcaneSword();
@@ -1267,6 +1410,7 @@ export class ArcaneWorldEngine {
       this.yaw = stage === 0 ? 0 : -Math.PI / 2;
       this.spawnLabyrinthEntities(savedPetState);
     }
+    this.applyAtmosphereForMapMode();
     this.pushHudSnapshot();
   }
 
@@ -1390,12 +1534,12 @@ export class ArcaneWorldEngine {
     const groundGeo = new THREE.PlaneGeometry(groundW, groundD);
     groundGeo.rotateX(-Math.PI / 2);
     const groundMat = new THREE.MeshStandardMaterial({
-      color: 0xffffff,
+      color: 0x94a3b8,
       map,
       bumpMap,
       bumpScale: 0.08,
-      roughness: 0.84,
-      metalness: 0.08,
+      roughness: 0.88,
+      metalness: 0.06,
     });
     const ground = new THREE.Mesh(groundGeo, groundMat);
     ground.receiveShadow = !this.isSoftwareGl;
@@ -1424,6 +1568,16 @@ export class ArcaneWorldEngine {
       metalness: 0.82,
     });
 
+    const pillarMatrices: THREE.Matrix4[] = [];
+    const capMatrices: THREE.Matrix4[] = [];
+    const sconceMatrices: THREE.Matrix4[] = [];
+    const flameMatrices: THREE.Matrix4[] = [];
+    const pillarPlacedKeys = new Set<string>();
+    const mat4 = new THREE.Matrix4();
+    const posVec = new THREE.Vector3();
+    const quat = new THREE.Quaternion();
+    const scaleVec = new THREE.Vector3(1, 1, 1);
+
     for (const ws of layout.wallSpecs) {
       const wallGroup = new THREE.Group();
       wallGroup.position.set(ws.x, 0, ws.z);
@@ -1440,6 +1594,140 @@ export class ArcaneWorldEngine {
 
       wallGroup.add(stoneBase, hedgeBody, goldTrim);
       this.worldContentGroup.add(wallGroup);
+
+      // Compute low-poly stone pillars & torches along wall segments to break up flat wall runs
+      const isHoriz = ws.w >= ws.d;
+      const longLen = isHoriz ? ws.w : ws.d;
+      const thick = isHoriz ? ws.d : ws.w;
+      if (longLen >= 10) {
+        const span = Math.max(0, longLen - 3.0);
+        const segCount = Math.max(1, Math.round(span / 20));
+        for (let s = 0; s <= segCount; s++) {
+          const t = segCount === 0 ? 0.5 : s / segCount;
+          const along = -span / 2 + t * span;
+
+          // Determine which side(s) face into the playable labyrinth interior
+          const isOuterNegX = !isHoriz && ws.x <= -layout.halfWidth + 1;
+          const isOuterPosX = !isHoriz && ws.x >= layout.halfWidth - 1;
+          const isOuterNegZ = isHoriz && ws.z <= -layout.halfLength + 1;
+          const isOuterPosZ = isHoriz && ws.z >= layout.halfLength - 1;
+          const isOuterWall = isOuterNegX || isOuterPosX || isOuterNegZ || isOuterPosZ;
+
+          let nx = 0;
+          let nz = 0;
+          if (isHoriz) {
+            nz = isOuterNegZ ? 1 : isOuterPosZ ? -1 : s % 2 === 0 ? 1 : -1;
+          } else {
+            nx = isOuterNegX ? 1 : isOuterPosX ? -1 : s % 2 === 0 ? 1 : -1;
+          }
+
+          const px = isHoriz ? ws.x + along : ws.x + nx * (thick * 0.5 - 0.14);
+          const pz = isHoriz ? ws.z + nz * (thick * 0.5 - 0.14) : ws.z + along;
+
+          const dedupKey = `${Math.round(px / 2)}_${Math.round(pz / 2)}`;
+          if (pillarPlacedKeys.has(dedupKey)) continue;
+          pillarPlacedKeys.add(dedupKey);
+
+          // Pillar shaft (height 5.4 -> center y = 2.7, flush with floor y = 0)
+          posVec.set(px, 2.7, pz);
+          quat.identity();
+          mat4.compose(posVec, quat, scaleVec);
+          pillarMatrices.push(mat4.clone());
+
+          // Plinth & capital blocks
+          posVec.set(px, 0.22, pz);
+          mat4.compose(posVec, quat, scaleVec);
+          capMatrices.push(mat4.clone());
+          posVec.set(px, 5.45, pz);
+          mat4.compose(posVec, quat, scaleVec);
+          capMatrices.push(mat4.clone());
+
+          // Add wall torch on alternating pillars away from spawn/goal
+          const distGoal = Math.hypot(px - this.labyrinthGoalPos.x, pz - this.labyrinthGoalPos.z);
+          const distStart = Math.hypot(px - this.labyrinthStartX, pz - this.labyrinthStartZ);
+          const shouldPlaceTorch =
+            distGoal > 6.5 && distStart > 4.5 && (isOuterWall ? s % 2 === 1 : s % 2 === 0 || segCount <= 1);
+          if (shouldPlaceTorch) {
+            const tx = px + nx * 0.52;
+            const tz = pz + nz * 0.52;
+            posVec.set(tx, 2.95, tz);
+            mat4.compose(posVec, quat, scaleVec);
+            sconceMatrices.push(mat4.clone());
+
+            posVec.set(tx, 3.42, tz);
+            mat4.compose(posVec, quat, scaleVec);
+            flameMatrices.push(mat4.clone());
+
+            this.labyrinthTorchPositions.push({
+              x: tx + nx * 1.15,
+              y: 2.55,
+              z: tz + nz * 1.15,
+              phase: this.labyrinthTorchPositions.length * 1.17,
+            });
+          }
+        }
+      }
+    }
+
+    if (pillarMatrices.length > 0) {
+      const pillarGeo = new THREE.CylinderGeometry(0.42, 0.5, 5.4, 6);
+      const pillarMat = new THREE.MeshStandardMaterial({
+        color: 0x3b4456,
+        roughness: 0.9,
+        metalness: 0.12,
+        flatShading: true,
+      });
+      const pillarInst = new THREE.InstancedMesh(pillarGeo, pillarMat, pillarMatrices.length);
+      for (let i = 0; i < pillarMatrices.length; i++) {
+        pillarInst.setMatrixAt(i, pillarMatrices[i]);
+      }
+      pillarInst.instanceMatrix.needsUpdate = true;
+      pillarInst.computeBoundingSphere();
+      this.worldContentGroup.add(pillarInst);
+
+      const capGeo = new THREE.BoxGeometry(1.12, 0.44, 1.12);
+      const capMat = new THREE.MeshStandardMaterial({
+        color: 0x242b38,
+        roughness: 0.85,
+        metalness: 0.2,
+        flatShading: true,
+      });
+      const capInst = new THREE.InstancedMesh(capGeo, capMat, capMatrices.length);
+      for (let i = 0; i < capMatrices.length; i++) {
+        capInst.setMatrixAt(i, capMatrices[i]);
+      }
+      capInst.instanceMatrix.needsUpdate = true;
+      capInst.computeBoundingSphere();
+      this.worldContentGroup.add(capInst);
+    }
+
+    if (sconceMatrices.length > 0) {
+      const sconceGeo = new THREE.CylinderGeometry(0.09, 0.06, 0.62, 5);
+      const sconceMat = new THREE.MeshStandardMaterial({
+        color: 0x1e2430,
+        roughness: 0.45,
+        metalness: 0.75,
+        flatShading: true,
+      });
+      const sconceInst = new THREE.InstancedMesh(sconceGeo, sconceMat, sconceMatrices.length);
+      for (let i = 0; i < sconceMatrices.length; i++) {
+        sconceInst.setMatrixAt(i, sconceMatrices[i]);
+      }
+      sconceInst.instanceMatrix.needsUpdate = true;
+      sconceInst.computeBoundingSphere();
+      this.worldContentGroup.add(sconceInst);
+
+      const flameGeo = new THREE.ConeGeometry(0.19, 0.48, 5);
+      const flameMat = new THREE.MeshBasicMaterial({
+        color: 0xffb32c,
+      });
+      const flameInst = new THREE.InstancedMesh(flameGeo, flameMat, flameMatrices.length);
+      for (let i = 0; i < flameMatrices.length; i++) {
+        flameInst.setMatrixAt(i, flameMatrices[i]);
+      }
+      flameInst.instanceMatrix.needsUpdate = true;
+      flameInst.computeBoundingSphere();
+      this.worldContentGroup.add(flameInst);
     }
 
     this.labyrinthWalls = layout.wallBoxes;
@@ -1687,40 +1975,40 @@ export class ArcaneWorldEngine {
     const eyeY = 1.72;
     const eyeZ = this.playerPos.z;
     const cosPitch = Math.cos(this.pitch);
-    const dir = new THREE.Vector3(
-      -Math.sin(this.yaw) * cosPitch,
-      Math.sin(this.pitch),
-      -Math.cos(this.yaw) * cosPitch
-    ).normalize();
+    _aimDir
+      .set(
+        -Math.sin(this.yaw) * cosPitch,
+        Math.sin(this.pitch),
+        -Math.cos(this.yaw) * cosPitch
+      )
+      .normalize();
 
-    const flatFwd = new THREE.Vector3(-Math.sin(this.yaw), 0, -Math.cos(this.yaw)).normalize();
-    const candidatePoints: THREE.Vector3[] = [];
+    _aimFlatFwd.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw)).normalize();
+    let sampleCount = 0;
 
     // 1. Exact camera ray intersection with ground plane y = 0.03
-    if (dir.y < -0.015) {
-      const t = (0.03 - eyeY) / dir.y;
+    if (_aimDir.y < -0.015) {
+      const t = (0.03 - eyeY) / _aimDir.y;
       if (t > 0.5 && t <= 34) {
-        candidatePoints.push(
-          new THREE.Vector3(eyeX + dir.x * t, 0, eyeZ + dir.z * t)
-        );
+        _aimSamples[sampleCount++].set(eyeX + _aimDir.x * t, 0, eyeZ + _aimDir.z * t);
       }
     }
 
     // 2. Also sample forward ground look points (5m, 8.5m, 12.5m ahead) when looking horizontally toward a lake/snow patch
-    if (dir.y >= -0.35 && dir.y <= 0.32) {
-      for (const dist of [4.8, 8.2, 12.0, 16.0]) {
-        candidatePoints.push(
-          new THREE.Vector3(
-            this.playerPos.x + flatFwd.x * dist,
-            0,
-            this.playerPos.z + flatFwd.z * dist
-          )
+    if (_aimDir.y >= -0.35 && _aimDir.y <= 0.32) {
+      for (let dIdx = 0; dIdx < _aimSampleDists.length; dIdx++) {
+        const dist = _aimSampleDists[dIdx];
+        _aimSamples[sampleCount++].set(
+          this.playerPos.x + _aimFlatFwd.x * dist,
+          0,
+          this.playerPos.z + _aimFlatFwd.z * dist
         );
       }
     }
 
     // First check Snow patches (since Snow patches sit on top of Water lakes!)
-    for (const pt of candidatePoints) {
+    for (let s = 0; s < sampleCount; s++) {
+      const pt = _aimSamples[s];
       for (const patch of this.snowPatches) {
         const d = Math.hypot(pt.x - patch.position.x, pt.z - patch.position.z);
         if (d <= patch.radius + 1.1) {
@@ -1748,7 +2036,8 @@ export class ArcaneWorldEngine {
     }
 
     // Next check Water lakes
-    for (const pt of candidatePoints) {
+    for (let s = 0; s < sampleCount; s++) {
+      const pt = _aimSamples[s];
       for (const lake of this.waterLakes) {
         const nx = (pt.x - lake.position.x) / (lake.spec.radiusX + 1.0);
         const nz = (pt.z - lake.position.z) / (lake.spec.radiusZ + 1.0);
@@ -3324,6 +3613,8 @@ export class ArcaneWorldEngine {
     [
       new THREE.Vector3(-14, 0, 8),
       new THREE.Vector3(14, 0, 9),
+      new THREE.Vector3(-18, 0, -8),
+      new THREE.Vector3(18, 0, -8),
     ].forEach((pos, idx) => this.spawnTreeNode(pos, idx));
 
     [
@@ -3419,34 +3710,65 @@ export class ArcaneWorldEngine {
     const stage5Specs = this.labyrinthStage === 5 ? getStage5SpawnSpecs() : null;
     const treeSpots =
       this.labyrinthStage === 0
-        ? [new THREE.Vector3(-20, 0, 14), new THREE.Vector3(20, 0, 14)]
+        ? [
+            new THREE.Vector3(-18, 0, 22),
+            new THREE.Vector3(18, 0, 22),
+            new THREE.Vector3(-20, 0, 14),
+            new THREE.Vector3(20, 0, 14),
+            new THREE.Vector3(-22, 0, -4),
+            new THREE.Vector3(22, 0, -4),
+          ]
         : this.labyrinthStage === 5 && stage5Specs
         ? stage5Specs.trees.map((pt) => new THREE.Vector3(pt.x, 0, pt.z))
         : this.labyrinthStage === 4
         ? [
+            new THREE.Vector3(-70, 0, 174),
+            new THREE.Vector3(-52, 0, 156),
             new THREE.Vector3(-48, 0, 172),
+            new THREE.Vector3(-32, 0, 168),
+            new THREE.Vector3(24, 0, 164),
             new THREE.Vector3(52, 0, 131),
+            new THREE.Vector3(-34, 0, 112),
             new THREE.Vector3(52, 0, 63),
+            new THREE.Vector3(36, 0, 22),
             new THREE.Vector3(-52, 0, -73),
           ]
         : this.labyrinthStage === 3
         ? [
+            new THREE.Vector3(-54, 0, 146),
+            new THREE.Vector3(-38, 0, 128),
             new THREE.Vector3(-34, 0, 142),
+            new THREE.Vector3(-18, 0, 140),
+            new THREE.Vector3(12, 0, 136),
             new THREE.Vector3(52, 0, 84),
+            new THREE.Vector3(-28, 0, 66),
             new THREE.Vector3(-44, 0, 14),
+            new THREE.Vector3(36, 0, -18),
             new THREE.Vector3(44, 0, -72),
           ]
         : this.labyrinthStage === 2
         ? [
+            new THREE.Vector3(-50, 0, 114),
+            new THREE.Vector3(-36, 0, 98),
             new THREE.Vector3(-31, 0, 110),
+            new THREE.Vector3(-16, 0, 108),
+            new THREE.Vector3(24, 0, 96),
             new THREE.Vector3(48, 0, 72),
+            new THREE.Vector3(-48, 0, 42),
             new THREE.Vector3(24, 0, 22),
+            new THREE.Vector3(34, 0, -28),
             new THREE.Vector3(-28, 0, -56),
           ]
         : [
+            new THREE.Vector3(-46, 0, 98),
+            new THREE.Vector3(-34, 0, 84),
             new THREE.Vector3(-28, 0, 96),
+            new THREE.Vector3(-14, 0, 94),
+            new THREE.Vector3(18, 0, 86),
             new THREE.Vector3(44, 0, 74),
+            new THREE.Vector3(36, 0, 42),
             new THREE.Vector3(-24, 0, 38),
+            new THREE.Vector3(-36, 0, -6),
             new THREE.Vector3(-12, 0, -32),
           ];
     treeSpots.forEach((p, i) => this.spawnTreeNode(p, i));
@@ -3957,7 +4279,10 @@ export class ArcaneWorldEngine {
       chest.contents = this.buildChestContents(chest.spec);
     }
 
-    chest.mesh.remove(chest.badgeSprite);
+    if (chest.badgeSprite) {
+      chest.mesh.remove(chest.badgeSprite);
+      this.disposeHierarchy(chest.badgeSprite);
+    }
     const openedBadge = this.createBillboardBadge(
       `👁️ ${chest.spec.label}`,
       '#38bdf8',
@@ -3987,7 +4312,10 @@ export class ArcaneWorldEngine {
     chest.contents = finalContents;
     chest.looted = true;
 
-    chest.mesh.remove(chest.badgeSprite);
+    if (chest.badgeSprite) {
+      chest.mesh.remove(chest.badgeSprite);
+      this.disposeHierarchy(chest.badgeSprite);
+    }
     const lootedBadge = this.createBillboardBadge(
       `✨ ${chest.spec.label}`,
       '#22c55e',
@@ -4229,7 +4557,10 @@ export class ArcaneWorldEngine {
     const rMat = btn.ringMesh.material as THREE.MeshBasicMaterial;
     rMat.color.set('#22c55e');
 
-    btn.mesh.remove(btn.badgeSprite);
+    if (btn.badgeSprite) {
+      btn.mesh.remove(btn.badgeSprite);
+      this.disposeHierarchy(btn.badgeSprite);
+    }
     const nextBadge = this.createBillboardBadge(
       `✅ Кнопка активна`,
       '#22c55e',
@@ -4258,7 +4589,10 @@ export class ArcaneWorldEngine {
         (b) => b.spec.gateId === gate.id && b.activated
       ).length;
 
-      gate.mesh.remove(gate.badgeSprite);
+      if (gate.badgeSprite) {
+        gate.mesh.remove(gate.badgeSprite);
+        this.disposeHierarchy(gate.badgeSprite);
+      }
       if (gate.buttonsActivated >= gate.totalButtons && !gate.isOpen) {
         gate.isOpen = true;
         const openBadge = this.createBillboardBadge(
@@ -4860,8 +5194,8 @@ export class ArcaneWorldEngine {
     flameGroup.add(mainFlame, coreFlame, sideFlame1, sideFlame2);
     group.add(flameGroup);
 
-    const fireLight = new THREE.PointLight(0xff7b00, 0, 9.5, 1.6);
-    fireLight.position.set(0, 1.1, 0);
+    const fireLight = new THREE.PointLight(0xff8c24, 0, 22, 1.15);
+    fireLight.position.set(0, 1.35, 0);
     group.add(fireLight);
 
     this.worldContentGroup.add(group);
@@ -4906,7 +5240,7 @@ export class ArcaneWorldEngine {
     campfire.isLit = true;
     campfire.flameGroup.visible = true;
     campfire.auraRing.visible = true;
-    campfire.fireLight.intensity = 2.4;
+    campfire.fireLight.intensity = 10.5;
 
     const firePos = _v1.copy(campfire.position).setY(0.6);
     this.spawnParticles(firePos, 0xf97316, 32, 6.5);
@@ -5092,7 +5426,7 @@ export class ArcaneWorldEngine {
   }
 
   /**
-   * Spawns the next 1-by-1 enemy on Stage 0 (Уровень 0) or pauses at Step 8 for the mandatory Campfire/Wall/Potion/Food preparation gate.
+   * Spawns the next 1-by-1 enemy on Stage 0 (Уровень 0) or pauses at Step 12 for the mandatory Campfire/Wall/Potion/Food preparation gate.
    */
   private spawnNextStage0Enemy() {
     if (this.mapMode !== 'labyrinth' || this.labyrinthStage !== 0) return;
@@ -5126,7 +5460,7 @@ export class ArcaneWorldEngine {
         this.callbacks.onLootCollected(
           'ancient_wood',
           5,
-          '⛺ Подготовка к 3-й волне: выданы припасы для Костра [C], Стены [B], Зелья и Еды [I]!'
+          '⛺ Подготовка к 4-й волне: выданы припасы для Костра [C], Стены [B], Зелья и Еды [I]!'
         );
         this.callbacks.onLootCollected('mandrake_root', 2, '');
         this.callbacks.onLootCollected('rat_meat', 2, '');
@@ -5159,7 +5493,14 @@ export class ArcaneWorldEngine {
         qualityPercent: 100,
         damage: 0,
         detail: '',
-        color: spec.phase === 1 ? '#38bdf8' : spec.phase === 2 ? '#fde047' : '#ef4444',
+        color:
+          spec.phase === 1
+            ? '#38bdf8'
+            : spec.phase === 2
+            ? '#fde047'
+            : spec.phase === 3
+            ? '#c084fc'
+            : '#ef4444',
         timestamp: performance.now(),
       };
     }
@@ -5188,7 +5529,7 @@ export class ArcaneWorldEngine {
       const wasWaiting = this.stage0PrepState.active;
       this.stage0PrepState.active = false;
       this.callbacks.onQuestEvent('stage0_prep_complete', 1);
-      if (wasWaiting && this.stage0StepIndex === 8) {
+      if (wasWaiting && this.stage0StepIndex === 12) {
         this.spawnNextStage0Enemy();
       }
     }
@@ -8572,6 +8913,7 @@ export class ArcaneWorldEngine {
       stateTimer: 1.5 + (idx % 4) * 0.35,
       stunTimer: 0,
       freezeTimer: 0,
+      levitateTimer: 0,
       burnTimer: 0,
       burnTickAccum: 0,
       chargeCooldown: 7.0,
@@ -8822,7 +9164,10 @@ export class ArcaneWorldEngine {
       return;
     }
     const def = PET_CATALOG[pet.species];
-    pet.mesh.remove(pet.badgeSprite);
+    if (pet.badgeSprite) {
+      pet.mesh.remove(pet.badgeSprite);
+      this.disposeHierarchy(pet.badgeSprite);
+    }
     const nextSprite = this.createBillboardBadge(pet.name, def.primaryColor, '[E] Приручить питомца');
     nextSprite.position.set(0, 1.85, 0);
     nextSprite.visible = true;
@@ -9269,11 +9614,45 @@ export class ArcaneWorldEngine {
       audioEngine.playPickupChime();
       this.callbacks.onQuestEvent('transfigure', 1);
 
+      let healedAllyName: string | null = null;
+      if (
+        this.mapMode === 'labyrinth' &&
+        this.labyrinthMultiplayerMode === 'shared' &&
+        this.remoteMeshes.size > 0
+      ) {
+        const candidates = Array.from(this.remoteMeshes.values()).map((entry) => entry.data);
+        const aimedAlly = findAimedTargetOnRay(
+          this.camera.position,
+          _forward,
+          candidates,
+          18,
+          1.45
+        );
+        if (aimedAlly) {
+          _v2.set(aimedAlly.x, aimedAlly.y + 1.1, aimedAlly.z);
+          if (
+            !segmentHitsWall(
+              this.camera.position.x,
+              this.camera.position.z,
+              aimedAlly.x,
+              aimedAlly.z,
+              this.labyrinthWalls,
+              0.15
+            )
+          ) {
+            this.spawnParticles(_v2, 0x22c55e, 26, 5.8);
+            this.callbacks.onMultiplayerHeal?.(aimedAlly.id, healVal);
+            healedAllyName = aimedAlly.name;
+          }
+        }
+      }
+
       this.lastCastBanner = {
-        spellName:
-          spellLevel >= 6
-            ? `+${healVal} ОЗ · Очищение + Регенерация 4с`
-            : `+${healVal} здоровья`,
+        spellName: healedAllyName
+          ? `+${healVal} ОЗ вам и союзнику «${healedAllyName}»!`
+          : spellLevel >= 6
+          ? `+${healVal} ОЗ · Очищение + Регенерация 4с`
+          : `+${healVal} здоровья`,
         qualityPercent: params.castQualityPercent,
         damage: healVal,
         detail: '',
@@ -9405,19 +9784,6 @@ export class ArcaneWorldEngine {
     }
 
     const count = params.projectileCount ?? 1;
-    this.lastCastBanner = {
-      spellName:
-        params.spellId === 'wingardium'
-          ? 'Телекинез'
-          : count >= 2
-          ? `Урон: ${params.finalDamage} x2`
-          : `Урон: ${params.finalDamage}`,
-      qualityPercent: params.castQualityPercent,
-      damage: params.finalDamage,
-      detail: '',
-      color: spell.color,
-      timestamp: performance.now(),
-    };
 
     // Special Handling 3: Wingardium Leviosa (Telekinesis Grab / Shield / Throw)
     if (params.spellId === 'wingardium') {
@@ -10672,6 +11038,26 @@ export class ArcaneWorldEngine {
     this.pushHudSnapshot();
   }
 
+  public applyRemoteHealToSelf(healAmount: number, healerName?: string) {
+    if (this.mode !== 'playing' || healAmount <= 0) return;
+    const prevHp = this.hp;
+    this.hp = Math.min(this.maxHp, this.hp + Math.max(1, Math.round(healAmount)));
+    const gained = Math.max(0, Math.round(this.hp - prevHp));
+    this.spawnParticles(_v2.copy(this.playerPos).setY(1.2), 0x22c55e, 28, 5.5);
+    audioEngine.playPickupChime();
+    this.lastCastBanner = {
+      spellName: `💚 ${healerName ? `«${healerName}»` : 'Союзник'} исцелил вас: +${
+        gained > 0 ? gained : Math.round(healAmount)
+      } ОЗ`,
+      qualityPercent: 100,
+      damage: Math.round(healAmount),
+      detail: '',
+      color: '#22c55e',
+      timestamp: performance.now(),
+    };
+    this.pushHudSnapshot();
+  }
+
   public applyRemoteEnemyDamage(data: {
     enemyId: string;
     stage: number;
@@ -11099,7 +11485,7 @@ export class ArcaneWorldEngine {
         const flicker = 1 + Math.sin(cf.animPhase) * 0.14;
         cf.flameGroup.scale.set(1 + Math.cos(cf.animPhase * 0.7) * 0.08, flicker, 1);
         cf.flameGroup.rotation.y += dt * 1.8;
-        cf.fireLight.intensity = (cfSheltered ? 2.9 : 2.2) + Math.sin(cf.animPhase * 1.3) * 0.35;
+        cf.fireLight.intensity = (cfSheltered ? 13.5 : 10.0) + Math.sin(cf.animPhase * 1.3) * 1.4;
         (cf.auraRing.material as THREE.MeshBasicMaterial).color.setHex(
           cfSheltered ? 0x4ade80 : 0xf97316
         );
@@ -12208,6 +12594,7 @@ export class ArcaneWorldEngine {
       }
 
       if (enemy.state === 'ko') {
+        enemy.levitateTimer = 0;
         enemy.koTimer -= dt;
         if (enemy.chargeTrajectoryLine) {
           enemy.chargeTrajectoryLine.visible = false;
@@ -12233,13 +12620,13 @@ export class ArcaneWorldEngine {
         continue;
       }
 
-      // Enemy Burn DoT (from Level 6 Incendio or Lv4+ Arcane Sword: 3 seconds of burning fire!)
+      // Enemy Burn DoT (from Level 6 Incendio, Lv4+ Arcane Sword, or Thermal Blast combo: 3 seconds of burning fire!)
       if (enemy.burnTimer > 0) {
         enemy.burnTimer = Math.max(0, enemy.burnTimer - dt);
         enemy.burnTickAccum += dt;
         if (enemy.burnTickAccum >= 1.0) {
           enemy.burnTickAccum -= 1.0;
-          this.damageEnemy(enemy, 14, new THREE.Vector3(), 0xf97316, false, 'incendio');
+          this.damageEnemy(enemy, 14, new THREE.Vector3(), 0xf97316, false, 'incendio', false, false);
           if ((enemy.state as string) === 'ko') continue;
         }
       } else {
@@ -12290,6 +12677,12 @@ export class ArcaneWorldEngine {
         };
       }
 
+      // Wingardium Leviosa Levitation (3.0s): slows movement by 70% (0.3x speed) and floats enemy in mid-air!
+      const isLevitating = (enemy.levitateTimer ?? 0) > 0;
+      if (isLevitating) {
+        enemy.levitateTimer = Math.max(0, (enemy.levitateTimer ?? 0) - dt);
+      }
+
       if (enemy.stunTimer > 0) {
         enemy.stunTimer -= dt;
         enemy.chargeWindupTimer = 0;
@@ -12299,11 +12692,16 @@ export class ArcaneWorldEngine {
         }
         enemy.mesh.rotation.y += dt * 8;
         (enemy.telegraphMesh.material as THREE.MeshBasicMaterial).opacity = 0;
+        enemy.mesh.position.copy(enemy.position);
+        if ((enemy.levitateTimer ?? 0) > 0) {
+          enemy.mesh.position.y = enemy.position.y + 1.35 + Math.sin(enemy.animPhase * 2) * 0.15;
+        }
         continue;
       }
 
-      // Glacius slows enemies by 30% (GLACIUS_SLOW_FACTOR = 0.7) for 2 seconds!
+      // Glacius slows enemies by 30% (GLACIUS_SLOW_FACTOR = 0.7) for 3 seconds; Levitation slows movement by 70% (0.3x)!
       const freezeFactor = enemy.freezeTimer > 0 ? GLACIUS_SLOW_FACTOR : 1.0;
+      const moveSlowFactor = freezeFactor * ((enemy.levitateTimer ?? 0) > 0 ? 0.3 : 1.0);
       if (enemy.freezeTimer > 0) enemy.freezeTimer -= dt;
 
       if (enemy.archetype !== 'boss_totem' && enemy.velocity.lengthSq() > 0.01) {
@@ -12401,6 +12799,9 @@ export class ArcaneWorldEngine {
         (enemy.telegraphMesh.material as THREE.MeshBasicMaterial).opacity = 0;
         enemy.mesh.rotation.y = Math.atan2(_v2.x, _v2.z);
         enemy.mesh.position.copy(enemy.position);
+        if ((enemy.levitateTimer ?? 0) > 0) {
+          enemy.mesh.position.y = enemy.position.y + 1.35 + Math.sin(enemy.animPhase * 2) * 0.15;
+        }
         continue;
       }
 
@@ -12409,6 +12810,9 @@ export class ArcaneWorldEngine {
           enemy.state = 'seek';
         } else {
           enemy.mesh.position.copy(enemy.position);
+          if ((enemy.levitateTimer ?? 0) > 0) {
+            enemy.mesh.position.y = enemy.position.y + 1.35 + Math.sin(enemy.animPhase * 2) * 0.15;
+          }
           continue;
         }
       }
@@ -12717,7 +13121,7 @@ export class ArcaneWorldEngine {
 
         if (enemy.chargeActiveTimer > 0) {
           enemy.chargeActiveTimer = Math.max(0, enemy.chargeActiveTimer - dt);
-          const dashSpeed = 18.5 * freezeFactor;
+          const dashSpeed = 18.5 * moveSlowFactor;
           const nextX = enemy.position.x + enemy.chargeDir.x * dashSpeed * dt;
           const nextZ = enemy.position.z + enemy.chargeDir.z * dashSpeed * dt;
           if (
@@ -12771,6 +13175,9 @@ export class ArcaneWorldEngine {
             this.resolveLabyrinthCollisions(enemy.position, 0.85);
           }
           enemy.mesh.position.copy(enemy.position);
+          if ((enemy.levitateTimer ?? 0) > 0) {
+            enemy.mesh.position.y = enemy.position.y + 1.35 + Math.sin(enemy.animPhase * 2) * 0.15;
+          }
           continue;
         }
 
@@ -12790,6 +13197,9 @@ export class ArcaneWorldEngine {
           }
           this.spawnParticles(_v1.copy(enemy.position).setY(1.8), 0xef4444, 24, 6.0);
           enemy.mesh.position.copy(enemy.position);
+          if ((enemy.levitateTimer ?? 0) > 0) {
+            enemy.mesh.position.y = enemy.position.y + 1.35 + Math.sin(enemy.animPhase * 2) * 0.15;
+          }
           continue;
         }
       }
@@ -12800,18 +13210,21 @@ export class ArcaneWorldEngine {
       if (enemy.state === 'seek') {
         (enemy.telegraphMesh.material as THREE.MeshBasicMaterial).opacity = 0;
 
-        // Stage 0 Phase 2 ('move_only'): Monster approaches the player in motion, but NEVER attacks!
+        // Stage 0 Phase 2 & 3 ('move_only'): Monster approaches the player in motion, but NEVER attacks!
         if (enemy.stage0Behavior === 'move_only') {
           if (distToPlayer > 2.2 && hasLineOfSight) {
             const perpX = -dirToPlayer.z * enemy.strafeDir * 0.35;
             const perpZ = dirToPlayer.x * enemy.strafeDir * 0.35;
-            enemy.position.x += (dirToPlayer.x + perpX) * enemy.speed * freezeFactor * dt;
-            enemy.position.z += (dirToPlayer.z + perpZ) * enemy.speed * freezeFactor * dt;
+            enemy.position.x += (dirToPlayer.x + perpX) * enemy.speed * moveSlowFactor * dt;
+            enemy.position.z += (dirToPlayer.z + perpZ) * enemy.speed * moveSlowFactor * dt;
           }
           if (this.mapMode === 'labyrinth') {
             this.resolveLabyrinthCollisions(enemy.position, 0.85);
           }
           enemy.mesh.position.copy(enemy.position);
+          if ((enemy.levitateTimer ?? 0) > 0) {
+            enemy.mesh.position.y = enemy.position.y + 1.35 + Math.sin(enemy.animPhase * 2) * 0.15;
+          }
           continue;
         }
 
@@ -12826,8 +13239,8 @@ export class ArcaneWorldEngine {
           if (hasLineOfSight) {
             const perpX = -dirToPlayer.z * enemy.strafeDir * 0.42;
             const perpZ = dirToPlayer.x * enemy.strafeDir * 0.42;
-            enemy.position.x += (dirToPlayer.x + perpX) * enemy.speed * freezeFactor * dt;
-            enemy.position.z += (dirToPlayer.z + perpZ) * enemy.speed * freezeFactor * dt;
+            enemy.position.x += (dirToPlayer.x + perpX) * enemy.speed * moveSlowFactor * dt;
+            enemy.position.z += (dirToPlayer.z + perpZ) * enemy.speed * moveSlowFactor * dt;
           }
 
           if (distToPlayer < 4.3 && hasLineOfSight && activeAttackers < maxConcurrentAttackers) {
@@ -12843,12 +13256,12 @@ export class ArcaneWorldEngine {
             enemy.position.x +=
               (dirToPlayer.x * radialMove - dirToPlayer.z * enemy.strafeDir * 0.85) *
               enemy.speed *
-              freezeFactor *
+              moveSlowFactor *
               dt;
             enemy.position.z +=
               (dirToPlayer.z * radialMove + dirToPlayer.x * enemy.strafeDir * 0.85) *
               enemy.speed *
-              freezeFactor *
+              moveSlowFactor *
               dt;
           }
 
@@ -12862,8 +13275,8 @@ export class ArcaneWorldEngine {
             const strafeWeight = enemy.archetype === 'wild_boar' ? 0.22 : 0.55;
             const perpX = -dirToPlayer.z * enemy.strafeDir * strafeWeight;
             const perpZ = dirToPlayer.x * enemy.strafeDir * strafeWeight;
-            enemy.position.x += (dirToPlayer.x + perpX) * enemy.speed * freezeFactor * dt;
-            enemy.position.z += (dirToPlayer.z + perpZ) * enemy.speed * freezeFactor * dt;
+            enemy.position.x += (dirToPlayer.x + perpX) * enemy.speed * moveSlowFactor * dt;
+            enemy.position.z += (dirToPlayer.z + perpZ) * enemy.speed * moveSlowFactor * dt;
           }
 
           if (distToPlayer < 3.8 && hasLineOfSight && activeAttackers < maxConcurrentAttackers) {
@@ -12903,12 +13316,12 @@ export class ArcaneWorldEngine {
             enemy.position.x +=
               (dirToPlayer.x * radialMove - dirToPlayer.z * enemy.strafeDir * 0.8) *
               enemy.speed *
-              freezeFactor *
+              moveSlowFactor *
               dt;
             enemy.position.z +=
               (dirToPlayer.z * radialMove + dirToPlayer.x * enemy.strafeDir * 0.8) *
               enemy.speed *
-              freezeFactor *
+              moveSlowFactor *
               dt;
           }
 
@@ -12935,7 +13348,7 @@ export class ArcaneWorldEngine {
           if (distToPlayer > 2.8 && hasLineOfSight) {
             enemy.position.addScaledVector(
               dirToPlayer,
-              enemy.speed * shieldSlow * freezeFactor * dt
+              enemy.speed * shieldSlow * moveSlowFactor * dt
             );
           }
           enemy.stateTimer -= dt * freezeFactor;
@@ -13539,6 +13952,9 @@ export class ArcaneWorldEngine {
         this.resolveLabyrinthCollisions(enemy.position, 0.85);
       }
       enemy.mesh.position.copy(enemy.position);
+      if ((enemy.levitateTimer ?? 0) > 0) {
+        enemy.mesh.position.y = enemy.position.y + 1.35 + Math.sin(enemy.animPhase * 2) * 0.15;
+      }
     }
 
     // Only auto-spawn endless waves in Arena mode
@@ -13572,8 +13988,7 @@ export class ArcaneWorldEngine {
       }
 
       if (proj.life <= 0) {
-        this.scene.remove(proj.mesh);
-        this.projectiles.splice(i, 1);
+        this.removeAndDisposeProjectile(i);
         continue;
       }
 
@@ -13607,8 +14022,7 @@ export class ArcaneWorldEngine {
           }
         }
         if (hitButton) {
-          this.scene.remove(proj.mesh);
-          this.projectiles.splice(i, 1);
+          this.removeAndDisposeProjectile(i);
           continue;
         }
       }
@@ -13626,9 +14040,11 @@ export class ArcaneWorldEngine {
           0.22
         )
       ) {
+        if (proj.casterId === 'local' && proj.damage > 0) {
+          this.spawnFloatingDamageNumber(proj.position, proj.damage, proj.color.getHex());
+        }
         this.spawnParticles(proj.position, proj.color.getHex(), 10, 4);
-        this.scene.remove(proj.mesh);
-        this.projectiles.splice(i, 1);
+        this.removeAndDisposeProjectile(i);
         continue;
       }
 
@@ -13704,9 +14120,10 @@ export class ArcaneWorldEngine {
             : enemy.archetype === 'stone_crusher' || enemy.archetype === 'cave_bear'
             ? 1.95
             : 1.55;
+          const levitateLift = (enemy.levitateTimer ?? 0) > 0 ? 1.35 : 0;
           const enemyCenter = _v1
             .copy(enemy.position)
-            .setY(enemy.isFlying ? enemy.position.y + 0.45 : 1.3);
+            .setY((enemy.isFlying ? enemy.position.y + 0.45 : 1.3) + levitateLift);
           if (proj.position.distanceTo(enemyCenter) < hitRadius) {
             const knockMult =
               proj.spellId === 'stupefy' && isLv6
@@ -13733,13 +14150,17 @@ export class ArcaneWorldEngine {
               enemy.state = 'seek';
             }
             if (proj.spellId === 'glacius') {
-              enemy.freezeTimer = GLACIUS_SLOW_DURATION_SEC; // 2.0 seconds 30% slow!
+              enemy.freezeTimer = GLACIUS_SLOW_DURATION_SEC; // 3.0 seconds 30% slow!
               // Level 6 Glacius Awakening: Completely freezes the enemy in ice for 1.0 full second!
               if (isLv6) {
                 enemy.stunTimer = Math.max(enemy.stunTimer, 1.0);
                 enemy.state = 'seek';
                 this.spawnParticles(enemyCenter, 0xe0f2fe, 24, 6.5);
               }
+            }
+            if (proj.spellId === 'wingardium') {
+              enemy.levitateTimer = 3.0;
+              this.spawnParticles(enemyCenter, 0x38bdf8, 22, 6.0);
             }
             if (proj.spellId === 'incendio' && isLv6) {
               // Level 6 Incendio Awakening: Explodes on impact in a 4.5m fiery AoE and ignites enemies for 3 seconds!
@@ -13852,6 +14273,9 @@ export class ArcaneWorldEngine {
               const impulse = proj.velocity.clone().normalize().multiplyScalar(9);
               impulse.y = 4.2;
               prop.velocity.add(impulse);
+              if (proj.casterId === 'local' && proj.damage > 0) {
+                this.spawnFloatingDamageNumber(proj.position, proj.damage, proj.color.getHex());
+              }
               this.spawnParticles(pCenter, proj.color.getHex(), 12, 4);
               hit = true;
               break;
@@ -13861,8 +14285,7 @@ export class ArcaneWorldEngine {
       }
 
       if (hit) {
-        this.scene.remove(proj.mesh);
-        this.projectiles.splice(i, 1);
+        this.removeAndDisposeProjectile(i);
       }
     }
   }
@@ -13900,12 +14323,49 @@ export class ArcaneWorldEngine {
     colorHex: number,
     fromRemote = false,
     spellId = 'incendio',
-    isPetAttack = false
+    isPetAttack = false,
+    isDirectPlayerHit = true
   ) {
     if (enemy.state === 'ko' || enemy.hp <= 0) return;
     // Worm Boss & Mud Monster cannot be hit while burrowed underground ("исчезает под текстуры его нельзя бить")!
     if (enemy.burrowTimer && enemy.burrowTimer > 0) return;
     if (enemy.state === 'idle') enemy.state = 'seek';
+
+    const wasLevitating = (enemy.levitateTimer ?? 0) > 0;
+    const comboResult = applyElementalSpellCombo({
+      spellId,
+      baseDamage: amount,
+      freezeTimer: enemy.freezeTimer,
+      stunTimer: enemy.stunTimer,
+      levitateTimer: enemy.levitateTimer ?? 0,
+      fromRemote,
+      isPetAttack,
+      isDirectPlayerHit,
+    });
+    amount = comboResult.damage;
+    if (comboResult.consumeFreeze) {
+      enemy.freezeTimer = 0;
+    }
+    if (comboResult.consumeLevitate) {
+      enemy.levitateTimer = 0;
+    }
+    if (comboResult.consumeStun) {
+      enemy.stunTimer = 0;
+    }
+    if (comboResult.burnSec > 0) {
+      enemy.burnTimer = Math.max(enemy.burnTimer, comboResult.burnSec);
+    }
+    if (comboResult.addStunSec > 0) {
+      enemy.stunTimer += comboResult.addStunSec;
+    }
+    if (comboResult.comboType) {
+      const comboFxPos = _v1
+        .copy(enemy.position)
+        .setY((enemy.isFlying ? enemy.position.y + 0.45 : 1.25) + (wasLevitating ? 1.35 : 0));
+      this.spawnParticles(comboFxPos, 0xfde047, 14, 7.2);
+      this.spawnParticles(comboFxPos, 0x38bdf8, 10, 6.8);
+      this.callbacks.onQuestEvent('stage0_combo_practice', 1);
+    }
 
     // Stage 5 Skeleton Hammer & Shield takes almost no damage (85% reduction) while Shield Guard is active!
     if (enemy.archetype === 'skeleton_hammer_shield' && enemy.shieldGuardActive) {
@@ -13915,6 +14375,33 @@ export class ArcaneWorldEngine {
 
     const reconciled = reconcileSharedEnemyDamage(enemy.hp, enemy.maxHp, amount);
     enemy.hp = reconciled.nextHp;
+
+    const dmgVal = Math.max(1, Math.round(amount));
+    const isLargeEnemy =
+      enemy.archetype === 'boss_mage_1' ||
+      enemy.archetype === 'boss_mage_2' ||
+      enemy.archetype === 'boss_mage_3' ||
+      enemy.archetype === 'boss_elemental_4' ||
+      isStage5WormBossArchetype(enemy.archetype);
+    const dmgSpawnPos = _v1
+      .copy(enemy.position)
+      .setY(
+        (enemy.isFlying ? enemy.position.y + 1.45 : isLargeEnemy ? 3.2 : 2.3) +
+          (wasLevitating ? 1.0 : 0)
+      );
+    this.spawnFloatingDamageNumber(
+      dmgSpawnPos,
+      dmgVal,
+      comboResult.comboType ? 0xfde047 : colorHex,
+      spellId === 'arcane_sword' || Boolean(comboResult.comboType)
+    );
+    if (!fromRemote && !isPetAttack && isDirectPlayerHit && dmgVal > 0) {
+      this.callbacks.onPlayerEnemyHit?.({
+        enemyId: enemy.id,
+        damage: dmgVal,
+        spellId,
+      });
+    }
 
     // Check Stage 5 Worm Boss 3-Phase Splitting at <= 30% HP ("Фаза 2 - после 30% ХП -> 2x", "Фаза 3 - после 30% ХП среднего -> 4x")!
     let splitTriggered = false;
@@ -13968,8 +14455,8 @@ export class ArcaneWorldEngine {
     }
 
     if (enemy.archetype !== 'boss_totem' && !isStage5WormBossArchetype(enemy.archetype)) {
-      enemy.velocity.x += knockback.x;
-      enemy.velocity.z += knockback.z;
+      enemy.velocity.x += knockback.x * comboResult.knockbackMultiplier;
+      enemy.velocity.z += knockback.z * comboResult.knockbackMultiplier;
     }
     enemy.hitFlashTimer = 0.06;
     this.drawEnemyHpBarCanvas(
@@ -14116,7 +14603,7 @@ export class ArcaneWorldEngine {
           this.callbacks.onQuestEvent('stage0_kill_stationary', 1);
         } else if (enemy.stage0Phase === 2) {
           this.callbacks.onQuestEvent('stage0_kill_moving', 1);
-        } else if (enemy.stage0Phase === 3) {
+        } else if (enemy.stage0Phase === 4) {
           this.callbacks.onQuestEvent('stage0_clear', 1);
         }
         this.stage0StepIndex += 1;
@@ -14196,8 +14683,8 @@ export class ArcaneWorldEngine {
 
     if (this.heldProp) {
       // Base shield held in hand gives 50% damage reduction (`SHIELD_BASE_DAMAGE_MULTIPLIER = 0.5`)!
-      // At Level 6 Wingardium Awakening, shield absorbs 75% (0.25x damage taken).
-      const dmgMult = this.activeWingardiumLevel >= 6 ? 0.25 : SHIELD_BASE_DAMAGE_MULTIPLIER;
+      // At Level 6 Wingardium Awakening, shield absorbs 90% (0.10x damage taken).
+      const dmgMult = this.activeWingardiumLevel >= 6 ? 0.10 : SHIELD_BASE_DAMAGE_MULTIPLIER;
       amount = Math.max(1, Math.round(amount * dmgMult));
     }
     this.tookDamageThisStage = true;
@@ -14246,6 +14733,156 @@ export class ArcaneWorldEngine {
     }
     if (anyUpdated) {
       this.particleMesh.instanceMatrix.needsUpdate = true;
+    }
+  }
+
+  private clearFloatingDamageNumbers() {
+    for (const entry of this.floatingDamageNumbers) {
+      entry.active = false;
+      entry.sprite.visible = false;
+    }
+  }
+
+  private spawnFloatingDamageNumber(
+    worldPos: THREE.Vector3,
+    amount: number,
+    colorHex: number,
+    isSwordHit = false
+  ) {
+    let slot = this.floatingDamageNumbers.find((e) => !e.active);
+    if (!slot) {
+      if (this.floatingDamageNumbers.length < this.maxFloatingDamageNumbers) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 160;
+        canvas.height = 72;
+        const ctx = canvas.getContext('2d')!;
+        const texture = new THREE.CanvasTexture(canvas);
+        texture.colorSpace = THREE.SRGBColorSpace;
+        const material = new THREE.SpriteMaterial({
+          map: texture,
+          transparent: true,
+          depthTest: false,
+          depthWrite: false,
+        });
+        const sprite = new THREE.Sprite(material);
+        sprite.renderOrder = 999;
+        sprite.visible = false;
+        this.scene.add(sprite);
+        slot = {
+          sprite,
+          canvas,
+          ctx,
+          texture,
+          material,
+          active: false,
+          age: 0,
+          maxAge: 0.85,
+          velocityY: 1.9,
+          baseScaleX: 1.95,
+          baseScaleY: 0.88,
+        };
+        this.floatingDamageNumbers.push(slot);
+      } else {
+        // Recycle the oldest active floating damage number
+        slot = this.floatingDamageNumbers.reduce((oldest, curr) =>
+          curr.age > oldest.age ? curr : oldest
+        );
+      }
+    }
+
+    const { ctx, canvas } = slot;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const hexStr = `#${new THREE.Color(colorHex).getHexString()}`;
+    ctx.font = isSwordHit
+      ? '900 38px "JetBrains Mono", monospace'
+      : '800 34px "JetBrains Mono", monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = 'rgba(9, 8, 13, 0.92)';
+    const label = `-${Math.max(1, Math.round(amount))}`;
+    ctx.strokeText(label, canvas.width / 2, canvas.height / 2);
+    ctx.fillStyle = isSwordHit ? '#fde047' : hexStr;
+    ctx.fillText(label, canvas.width / 2, canvas.height / 2);
+    slot.texture.needsUpdate = true;
+
+    const jitterX = (Math.random() - 0.5) * 0.9;
+    const jitterZ = (Math.random() - 0.5) * 0.9;
+    slot.sprite.position.set(worldPos.x + jitterX, worldPos.y, worldPos.z + jitterZ);
+    slot.active = true;
+    slot.age = 0;
+    slot.maxAge = 0.85;
+    slot.velocityY = 1.95;
+    slot.baseScaleX = amount >= 80 ? 2.25 : 1.85;
+    slot.baseScaleY = amount >= 80 ? 1.02 : 0.84;
+    slot.material.opacity = 1;
+    slot.sprite.scale.set(slot.baseScaleX, slot.baseScaleY, 1);
+    slot.sprite.visible = true;
+  }
+
+  private updateFloatingDamageNumbers(dt: number) {
+    for (const entry of this.floatingDamageNumbers) {
+      if (!entry.active) continue;
+      entry.age += dt;
+      if (entry.age >= entry.maxAge) {
+        entry.active = false;
+        entry.sprite.visible = false;
+        continue;
+      }
+      const progress = entry.age / entry.maxAge;
+      entry.sprite.position.y += entry.velocityY * Math.max(0.25, 1 - progress * 0.65) * dt;
+      const punch = entry.age < 0.12 ? 1 + (1 - entry.age / 0.12) * 0.25 : 1;
+      entry.sprite.scale.set(entry.baseScaleX * punch, entry.baseScaleY * punch, 1);
+      entry.material.opacity = progress > 0.45 ? Math.max(0, 1 - (progress - 0.45) / 0.55) : 1;
+    }
+  }
+
+  private updateLabyrinthTorchLights(dt: number) {
+    const maxLights =
+      this.graphicsQuality === 'high' ? 6 : this.graphicsQuality === 'medium' ? 4 : 0;
+    if (
+      maxLights === 0 ||
+      this.mapMode !== 'labyrinth' ||
+      this.labyrinthTorchPositions.length === 0
+    ) {
+      for (const tl of this.torchLightPool) {
+        if (tl.intensity !== 0) tl.intensity = 0;
+      }
+      return;
+    }
+
+    this.torchFlickerTime += dt;
+    const refPos = this.mode === 'title' ? this.camera.position : this.playerPos;
+    const maxDistSq = 42 * 42;
+
+    const nearest: Array<{ distSq: number; x: number; y: number; z: number; phase: number }> = [];
+    for (const t of this.labyrinthTorchPositions) {
+      const dx = t.x - refPos.x;
+      const dz = t.z - refPos.z;
+      const distSq = dx * dx + dz * dz;
+      if (distSq > maxDistSq) continue;
+      if (nearest.length < maxLights) {
+        nearest.push({ distSq, ...t });
+        if (nearest.length === maxLights) {
+          nearest.sort((a, b) => a.distSq - b.distSq);
+        }
+      } else if (distSq < nearest[maxLights - 1].distSq) {
+        nearest[maxLights - 1] = { distSq, ...t };
+        nearest.sort((a, b) => a.distSq - b.distSq);
+      }
+    }
+
+    const baseIntensity = 12.5;
+    for (let i = 0; i < this.torchLightPool.length; i++) {
+      const light = this.torchLightPool[i];
+      if (i < nearest.length) {
+        const t = nearest[i];
+        light.position.set(t.x, t.y, t.z);
+        light.intensity =
+          baseIntensity * (0.88 + 0.12 * Math.sin(this.torchFlickerTime * 7.5 + t.phase));
+      } else {
+        light.intensity = 0;
+      }
     }
   }
 
@@ -14497,7 +15134,7 @@ export class ArcaneWorldEngine {
           ? {
               stepIndex: this.stage0StepIndex,
               totalSteps: STAGE_0_TOTAL_ENEMIES,
-              phase: (Math.min(3, Math.floor(this.stage0StepIndex / 4) + 1) as 1 | 2 | 3),
+              phase: (Math.min(4, Math.floor(this.stage0StepIndex / 4) + 1) as 1 | 2 | 3 | 4),
               waitingForPrep: this.stage0PrepState.active && !this.stage0PrepState.completed,
               completed: this.stage0Completed,
               prepState: { ...this.stage0PrepState },
@@ -14506,18 +15143,52 @@ export class ArcaneWorldEngine {
                 : this.stage0PrepState.active && !this.stage0PrepState.completed
                 ? STAGE_0_PREP_BANNER
                 : this.stage0StepIndex < 2
-                ? '🎯 Этап 1/3: Неподвижные мишени! Враги стоят на месте — спокойно испытай свои заклинания на 4 монстрах по очереди!'
+                ? '🎯 Этап 1/4: Неподвижные мишени! Враги стоят на месте — спокойно испытай свои заклинания на 4 монстрах по очереди!'
                 : this.stage0StepIndex < 4
                 ? '🎙️ Совет Арканума: Попробуй убить следующих врагов ГОЛОСОМ — зажми [R] и произнеси заклинание вслух (или нарисуй руну [ПКМ])!'
                 : this.stage0StepIndex < 8
-                ? '🏃 Этап 2/3: Живые мишени! Попробуй попади по врагам в движении — не спеши, они ещё не атакуют!'
-                : '⚔️ Этап 3/3: Настоящий бой! Теперь враги могут бить тебя — укрывайся за стеной, уворачивайся и атакуй!',
+                ? '🏃 Этап 2/4: Живые мишени! Попробуй попади по врагам в движении — не спеши, они ещё не атакуют!'
+                : this.stage0StepIndex < 12
+                ? getStage0StepSpec(this.stage0StepIndex)?.phaseBanner || ''
+                : '⚔️ Этап 4/4: Настоящий бой! Теперь враги могут бить тебя — укрывайся за стеной, уворачивайся и атакуй!',
             }
           : null,
       lastCastBanner:
         this.lastCastBanner && performance.now() - this.lastCastBanner.timestamp < 2400
           ? this.lastCastBanner
           : null,
+      radar: this.radarEnabled
+        ? {
+            mapMode: this.mapMode,
+            stage: this.labyrinthStage,
+            playerX: Number(this.playerPos.x.toFixed(2)),
+            playerZ: Number(this.playerPos.z.toFixed(2)),
+            playerYaw: Number(this.yaw.toFixed(3)),
+            goalPortal:
+              this.mapMode === 'labyrinth' &&
+              (!this.finishPortalGroup || this.finishPortalGroup.visible)
+                ? { x: this.labyrinthGoalPos.x, z: this.labyrinthGoalPos.z }
+                : null,
+            litCampfire: (() => {
+              const lit = this.campfires.find((cf) => cf.isLit);
+              return lit ? { x: lit.position.x, z: lit.position.z } : null;
+            })(),
+            unactivatedButtons: this.runeButtons
+              .filter((b) => !b.activated)
+              .map((b) => ({
+                x: b.position.x,
+                z: b.position.z,
+                color: b.spec.colorHex || '#f97316',
+              })),
+            unopenedChests: this.chests
+              .filter((c) => !c.opened)
+              .map((c) => ({ x: c.position.x, z: c.position.z })),
+            remotePlayers: Array.from(this.remoteMeshes.values()).map((entry) => ({
+              x: entry.data.x,
+              z: entry.data.z,
+            })),
+          }
+        : null,
     });
   }
 
@@ -14546,6 +15217,7 @@ export class ArcaneWorldEngine {
         this.camera.lookAt(0, 1.8, -4);
       }
       this.fpRig.visible = false;
+      this.updateLabyrinthTorchLights(dt);
     } else if (this.mode === 'playing') {
       this.fpRig.visible = true;
       if (this.hitstopTimer > 0) {
@@ -14554,6 +15226,8 @@ export class ArcaneWorldEngine {
         this.updateSimulation(dt);
       }
       this.updateParticles(dt);
+      this.updateFloatingDamageNumbers(dt);
+      this.updateLabyrinthTorchLights(dt);
 
       // Throttle HUD updates to ~10Hz
       this.hudSyncAccum += dt;
@@ -14661,6 +15335,19 @@ export class ArcaneWorldEngine {
     window.removeEventListener('keyup', this.onKeyUp);
     window.removeEventListener('blur', this.onBlur);
     window.removeEventListener('resize', this.onResize);
+    for (let i = this.projectiles.length - 1; i >= 0; i--) {
+      this.removeAndDisposeProjectile(i);
+    }
+    this.disposeHierarchy(this.worldContentGroup);
+    while (this.worldContentGroup.children.length > 0) {
+      this.worldContentGroup.remove(this.worldContentGroup.children[0]);
+    }
+    for (const entry of this.floatingDamageNumbers) {
+      this.scene.remove(entry.sprite);
+      entry.texture.dispose();
+      entry.material.dispose();
+    }
+    this.floatingDamageNumbers = [];
     this.renderer.dispose();
     if (this.renderer.domElement.parentNode) {
       this.renderer.domElement.parentNode.removeChild(this.renderer.domElement);

@@ -1,6 +1,7 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { memo, useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import {
   advanceQuestProgress,
+  AimSurfaceTarget,
   CAMPFIRE_WOOD_COST,
   CampfireRecipeId,
   CookedBatFoodItem,
@@ -74,6 +75,10 @@ import {
   ControlSchemeId,
   resolveControlSchemeCastParams,
   cycleSpellByWheel,
+  getLabyrinthStageLayout,
+  projectRadarPoint,
+  RADAR_CANVAS_SIZE,
+  RADAR_PX_PER_METER,
 } from './game/spells';
 import { audioEngine, VoiceSpellRecognizer } from './game/audio';
 import {
@@ -86,6 +91,8 @@ import {
 import { GrimoireModal, GrimoireTab, ItemBadgeIcon } from './components/GrimoireModal';
 import {
   connectMqttRoom,
+  decodeCharacterCode,
+  encodeCharacterCode,
   generateTwoDigitRoomCode,
   getActiveCharacterIdFromStorage,
   getOrCreateGuestDeviceId,
@@ -127,6 +134,187 @@ const INITIAL_SPELL_LEVELS: Record<SpellId, number> = {
   cooldown_reset: 1,
 };
 
+interface SpellDockGridProps {
+  selectedSpellId: SpellId;
+  spellLevels: Record<SpellId, number>;
+  aimSurfaceTarget: AimSurfaceTarget;
+  spellCooldowns: Record<SpellId, number>;
+  onSelectSpell: (spellId: SpellId) => void;
+}
+
+const SpellDockGrid = memo(
+  function SpellDockGrid({
+    selectedSpellId,
+    spellLevels,
+    aimSurfaceTarget,
+    spellCooldowns,
+    onSelectSpell,
+  }: SpellDockGridProps) {
+    const svgPointsBySpell = useMemo(() => {
+      const map = {} as Record<SpellId, string>;
+      for (const spId of SPELL_ORDER) {
+        const dockGesture = getActiveSpellGestureInfo(spId, aimSurfaceTarget);
+        map[spId] = dockGesture.templatePoints
+          .map((p) => `${Math.round(p.x * 36)},${Math.round(p.y * 36)}`)
+          .join(' ');
+      }
+      return map;
+    }, [aimSurfaceTarget]);
+
+    const renderSpellButton = (spId: SpellId) => {
+      const sp = SPELLS[spId];
+      const isSelected = selectedSpellId === spId;
+      const cd = spellCooldowns?.[spId] || 0;
+      const maxCd = getSpellCooldownForLevel(spId, spellLevels[spId] || 1);
+      const onCooldown = cd > 0.05;
+      const svgPoints = svgPointsBySpell[spId];
+      const hotkeyLabel = getSpellHotkeyLabel(spId);
+
+      return (
+        <button
+          key={sp.id}
+          type="button"
+          data-testid={`spell-dock-btn-${sp.id}`}
+          onClick={() => onSelectSpell(sp.id)}
+          className={`relative overflow-hidden py-2 px-1.5 rounded-lg border flex flex-col items-center justify-center gap-1 transition-all cursor-pointer ${
+            isSelected
+              ? 'bg-[#261f3d]'
+              : 'bg-[#161321] border-[#2a233d] hover:border-[#4c3d75]'
+          }`}
+          style={isSelected ? { borderColor: sp.color } : undefined}
+        >
+          {onCooldown && (
+            <div
+              className="absolute bottom-0 left-0 right-0 bg-[#09080d]/85 pointer-events-none transition-all duration-100 flex items-center justify-center"
+              style={{
+                height: `${Math.min(100, (cd / maxCd) * 100)}%`,
+              }}
+            />
+          )}
+
+          <span className="relative text-[11px] font-bold font-mono-num text-[#fde047] leading-none">
+            [{hotkeyLabel}]
+          </span>
+
+          <svg
+            viewBox="0 0 36 36"
+            className="relative w-7 h-7 overflow-visible"
+            aria-hidden="true"
+          >
+            {sp.id === 'arcane_sword' ? (
+              <g>
+                <polygon
+                  points="15.8,31.5 15.8,23 14.8,10 18,2.8 21.2,10 20.2,23 20.2,31.5"
+                  fill="rgba(251, 191, 36, 0.28)"
+                  stroke={sp.color}
+                  strokeWidth="2.3"
+                  strokeLinejoin="round"
+                />
+                <line
+                  x1="15.8"
+                  y1="23"
+                  x2="20.2"
+                  y2="23"
+                  stroke="rgba(245, 158, 11, 0.55)"
+                  strokeWidth="1.4"
+                  strokeDasharray="1.5 1.5"
+                />
+              </g>
+            ) : sp.id === 'cooldown_reset' ? (
+              <g>
+                <polyline
+                  points={svgPoints}
+                  fill="rgba(45, 212, 191, 0.18)"
+                  stroke={sp.color}
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+                <circle cx="7" cy="5" r="2.2" fill="#fde047" />
+              </g>
+            ) : (
+              <polyline
+                points={svgPoints}
+                fill="none"
+                stroke={sp.color}
+                strokeWidth="3"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            )}
+          </svg>
+
+          <span
+            className={`relative font-bold leading-none whitespace-nowrap ${
+              sp.shortWord.length > 8 ? 'text-[9.5px] tracking-tighter' : 'text-xs'
+            }`}
+            style={{ color: sp.color }}
+          >
+            {sp.shortWord}
+          </span>
+
+          {onCooldown && (
+            <span className="absolute inset-0 flex items-center justify-center text-xs font-bold font-mono-num text-white hud-stroke">
+              {Math.ceil(cd)}с
+            </span>
+          )}
+        </button>
+      );
+    };
+
+    const combatSpells = SPELL_ORDER.slice(0, 4);
+    const tacticalSpells = SPELL_ORDER.slice(4, 8);
+    const utilitySpells = SPELL_ORDER.slice(8, 11);
+
+    return (
+      <div
+        data-testid="spell-dock-grid"
+        className="w-full p-2 rounded-xl border border-[#3b3154] shadow-2xl flex items-stretch gap-2"
+        style={{ backgroundColor: 'rgba(14, 12, 22, 0.92)' }}
+      >
+        <div
+          data-testid="spell-dock-cluster-combat"
+          className="flex-[4] grid grid-cols-4 gap-[6px]"
+        >
+          {combatSpells.map(renderSpellButton)}
+        </div>
+        <div className="w-px self-stretch my-1 bg-[#3b3154]/85 shrink-0" aria-hidden="true" />
+        <div
+          data-testid="spell-dock-cluster-tactical"
+          className="flex-[4] grid grid-cols-4 gap-[6px]"
+        >
+          {tacticalSpells.map(renderSpellButton)}
+        </div>
+        <div className="w-px self-stretch my-1 bg-[#3b3154]/85 shrink-0" aria-hidden="true" />
+        <div
+          data-testid="spell-dock-cluster-utility"
+          className="flex-[3] grid grid-cols-3 gap-[6px]"
+        >
+          {utilitySpells.map(renderSpellButton)}
+        </div>
+      </div>
+    );
+  },
+  (prev, next) => {
+    if (
+      prev.selectedSpellId !== next.selectedSpellId ||
+      prev.spellLevels !== next.spellLevels ||
+      prev.aimSurfaceTarget !== next.aimSurfaceTarget ||
+      prev.onSelectSpell !== next.onSelectSpell
+    ) {
+      return false;
+    }
+    for (const spId of SPELL_ORDER) {
+      const a = prev.spellCooldowns?.[spId] || 0;
+      const b = next.spellCooldowns?.[spId] || 0;
+      if ((a > 0.05) !== (b > 0.05) || Math.round(a * 10) !== Math.round(b * 10)) {
+        return false;
+      }
+    }
+    return true;
+  }
+);
+
 export default function App() {
   const canvasMountRef = useRef<HTMLDivElement | null>(null);
   const worldRef = useRef<ArcaneWorldEngine | null>(null);
@@ -158,20 +346,24 @@ export default function App() {
   const [grimoireOpen, setGrimoireOpen] = useState(false);
   const [grimoireTab, setGrimoireTab] = useState<GrimoireTab>('craft');
   const [buildMenuOpen, setBuildMenuOpen] = useState(false);
-  const [hudVisibilityMode, setHudVisibilityMode] = useState<'full' | 'no_dock' | 'hidden'>('full');
+  const [hudHideStep, setHudHideStep] = useState<0 | 1 | 2 | 3 | 4>(0);
+  const [radarVisible, setRadarVisible] = useState(true);
+  const radarCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [showControlsHelp, setShowControlsHelp] = useState(
     initialAutoStart && initialModeParam === 'labyrinth'
   );
-  const [muted, setMuted] = useState(false);
-  const [masterVolume, setMasterVolume] = useState(85);
+  const [muted, setMuted] = useState<boolean>(() => audioEngine.muted);
+  const [masterVolume, setMasterVolume] = useState<number>(() =>
+    Math.round(audioEngine.getMasterVolume() * 100)
+  );
   const [graphicsQuality, setGraphicsQuality] = useState<GraphicsQuality>('high');
   const [controlScheme, setControlScheme] = useState<ControlSchemeId>(() => {
     try {
-      return localStorage.getItem('vox_arcanum_control_scheme_v1') === 'alternative'
-        ? 'alternative'
-        : 'classic';
+      return localStorage.getItem('vox_arcanum_control_scheme_v1') === 'classic'
+        ? 'classic'
+        : 'alternative';
     } catch {
-      return 'classic';
+      return 'alternative';
     }
   });
   const [roomInputCode, setRoomInputCode] = useState('');
@@ -238,6 +430,10 @@ export default function App() {
 
   // Push-To-Talk Voice Recognition State ([R] key)
   const [micListening, setMicListening] = useState(false);
+  const [voiceSpellMatched, setVoiceSpellMatched] = useState(false);
+  const voiceMatchTimerRef = useRef<number | null>(null);
+  const [hitMarkerActive, setHitMarkerActive] = useState(false);
+  const hitMarkerTimerRef = useRef<number | null>(null);
   const pendingVoiceSpellRef = useRef<{
     spellId: SpellId;
     quality: number;
@@ -276,6 +472,7 @@ export default function App() {
     playerFearTimeLeft: 0,
     spellCooldowns: INITIAL_COOLDOWNS,
     lastCastBanner: null,
+    radar: null,
   });
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -334,6 +531,10 @@ export default function App() {
     selfPlayerId,
     pvpPlayerName,
     controlScheme,
+    reagentInventory,
+    craftedPotions,
+    cookedFoods,
+    cookedBatFoods,
   });
   useEffect(() => {
     stateRef.current = {
@@ -353,6 +554,10 @@ export default function App() {
       selfPlayerId,
       pvpPlayerName,
       controlScheme,
+      reagentInventory,
+      craftedPotions,
+      cookedFoods,
+      cookedBatFoods,
     };
   }, [
     gameState,
@@ -371,6 +576,10 @@ export default function App() {
     selfPlayerId,
     pvpPlayerName,
     controlScheme,
+    reagentInventory,
+    craftedPotions,
+    cookedFoods,
+    cookedBatFoods,
   ]);
 
   useEffect(() => {
@@ -393,12 +602,20 @@ export default function App() {
       }
       showToast(
         scheme === 'alternative'
-          ? '⚡ Включено Альтернативное управление: поворот камеры мышью без [ЛКМ], клик [ЛКМ]/[Пробел] — каст 30%, зажать [ПКМ] — рисование руны от жёлтой точки в центре!'
-          : '🪄 Включено Классическое управление'
+          ? '⚡ Включено Основное управление (Лёгкое): поворот камеры мышью без [ЛКМ], клик [ЛКМ]/[Пробел] — каст 30%, зажать [ПКМ] — рисование руны от жёлтой точки!'
+          : '🪄 Включено Классическое управление (дополнительный режим)'
       );
     },
     [showToast]
   );
+
+  const toggleRadar = useCallback(() => {
+    setRadarVisible((prev) => {
+      const next = !prev;
+      worldRef.current?.setRadarEnabled(next);
+      return next;
+    });
+  }, []);
 
   const tryEngageAlternativePointerLock = useCallback(() => {
     if (
@@ -508,6 +725,9 @@ export default function App() {
     setEquippedArtifacts(profile.equippedArtifacts);
     setSpellLevels({ ...INITIAL_SPELL_LEVELS, ...profile.spellLevels });
     setReagentInventory(profile.reagentInventory);
+    setCraftedPotions(profile.craftedPotions || []);
+    setCookedFoods(profile.cookedFoods || []);
+    setCookedBatFoods(profile.cookedBatFoods || []);
     setQuests((prevQuests) =>
       INITIAL_QUESTS.map((q) => {
         if (profile.claimedQuestIds.includes(q.id)) {
@@ -591,6 +811,9 @@ export default function App() {
         equippedArtifacts,
         spellLevels,
         reagentInventory,
+        craftedPotions,
+        cookedFoods,
+        cookedBatFoods,
         tamedPetSpecies: petSpecies,
         tamedPetLevel: petLevel,
         tamedPetTrainingStep: petTrainingStep,
@@ -617,21 +840,30 @@ export default function App() {
     equippedArtifacts,
     spellLevels,
     reagentInventory,
+    craftedPotions,
+    cookedFoods,
+    cookedBatFoods,
   ]);
 
   useEffect(() => {
     if (isApplyingCharacterRef.current) return;
-    const owner = 'local_guest';
-    const updatedSnap = buildCurrentCharacterSnapshot();
-    setCharacters((prev) => {
-      const exists = prev.some((c) => c.id === updatedSnap.id);
-      const nextList = exists
-        ? prev.map((c) => (c.id === updatedSnap.id ? updatedSnap : c))
-        : [updatedSnap, ...prev];
-      saveLocalCharacters(owner, nextList);
-      setActiveCharacterIdInStorage(owner, updatedSnap.id);
-      return nextList;
-    });
+    const timerId = window.setTimeout(() => {
+      if (isApplyingCharacterRef.current) return;
+      const owner = 'local_guest';
+      const updatedSnap = buildCurrentCharacterSnapshot();
+      setCharacters((prev) => {
+        const exists = prev.some((c) => c.id === updatedSnap.id);
+        const nextList = exists
+          ? prev.map((c) => (c.id === updatedSnap.id ? updatedSnap : c))
+          : [updatedSnap, ...prev];
+        saveLocalCharacters(owner, nextList);
+        setActiveCharacterIdInStorage(owner, updatedSnap.id);
+        return nextList;
+      });
+    }, 600);
+    return () => {
+      window.clearTimeout(timerId);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     activeCharacterId,
@@ -649,6 +881,9 @@ export default function App() {
     equippedArtifacts,
     spellLevels,
     reagentInventory,
+    craftedPotions,
+    cookedFoods,
+    cookedBatFoods,
   ]);
 
   const handleManualSaveCharacter = useCallback(() => {
@@ -669,7 +904,7 @@ export default function App() {
     (customName?: string) => {
       const owner = 'local_guest';
       const cleanName =
-        (customName ?? newCharNameInput).trim() ||
+        (customName ?? newCharNameInput).trim().slice(0, 40) ||
         `Маг Арканума #${characters.length + 1}`;
       const baseKey = normalizePlayerProfileKey(cleanName);
       const existsLocally = characters.some((c) => c.id === baseKey);
@@ -712,6 +947,51 @@ export default function App() {
       setNewCharNameInput('');
       applyCharacterProfileToState(found);
       showToast(`🧙 Профиль «${found.name}» (Ур. ${found.playerLevel}) загружен!`);
+    },
+    [newCharNameInput, characters, applyCharacterProfileToState, showToast]
+  );
+
+  const handleExportCharacterCode = useCallback(() => {
+    const snap = buildCurrentCharacterSnapshot();
+    const encoded = encodeCharacterCode(snap);
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      navigator.clipboard
+        .writeText(encoded)
+        .then(() => {
+          showToast(`📋 Код мага «${snap.name}» скопирован в буфер обмена!`);
+        })
+        .catch(() => {
+          setNewCharNameInput(encoded);
+          showToast(`📋 Код мага «${snap.name}» вставлен в поле — скопируйте его вручную.`);
+        });
+    } else {
+      setNewCharNameInput(encoded);
+      showToast(`📋 Код мага «${snap.name}» вставлен в поле — скопируйте его вручную.`);
+    }
+  }, [buildCurrentCharacterSnapshot, showToast]);
+
+  const handleImportCharacterCode = useCallback(
+    (rawOverride?: string) => {
+      const owner = 'local_guest';
+      const raw = (rawOverride ?? newCharNameInput).trim();
+      if (!raw) {
+        showToast('Вставьте код мага в поле выше и нажмите «📥 Импорт кода».');
+        return;
+      }
+      const decoded = decodeCharacterCode(raw, owner);
+      if (!decoded) {
+        showToast('❌ Неверный код мага! Проверьте, что скопировали строку полностью.');
+        return;
+      }
+      const nextList = characters.some((c) => c.id === decoded.id)
+        ? characters.map((c) => (c.id === decoded.id ? decoded : c))
+        : [decoded, ...characters];
+      setCharacters(nextList);
+      saveLocalCharacters(owner, nextList);
+      setActiveCharacterIdInStorage(owner, decoded.id);
+      setNewCharNameInput('');
+      applyCharacterProfileToState(decoded);
+      showToast(`📥 Импортирован маг «${decoded.name}» (Ур. ${decoded.playerLevel})!`);
     },
     [newCharNameInput, characters, applyCharacterProfileToState, showToast]
   );
@@ -1169,6 +1449,24 @@ export default function App() {
             });
           }
         },
+        onPlayerHealed: (data) => {
+          if (data.targetId === stateRef.current.selfPlayerId && worldRef.current) {
+            worldRef.current.applyRemoteHealToSelf(data.healAmount, data.healerName);
+            roomSessionRef.current?.sendMove({
+              x: Number(worldRef.current.playerPos.x.toFixed(2)),
+              y: 0,
+              z: Number(worldRef.current.playerPos.z.toFixed(2)),
+              rotY: Number(worldRef.current.yaw.toFixed(2)),
+              hp: Math.round(worldRef.current.hp),
+              maxHp: Math.round(worldRef.current.maxHp),
+              shieldActive: shieldActiveRef.current,
+              name: stateRef.current.pvpPlayerName,
+              staffId: stateRef.current.equippedStaffId,
+              level: stateRef.current.playerLevel,
+            });
+            showToast(`💚 ${data.healerName || 'Союзник'} исцелил вас (+${data.healAmount} ОЗ)!`);
+          }
+        },
         onDuelReset: () => {
           if (worldRef.current) {
             worldRef.current.hp = worldRef.current.maxHp;
@@ -1314,6 +1612,14 @@ export default function App() {
           stateRef.current.pvpPlayerName
         );
       },
+      onMultiplayerHeal: (targetId, healAmount) => {
+        roomSessionRef.current?.sendPlayerHeal(
+          targetId,
+          healAmount,
+          stateRef.current.pvpPlayerName
+        );
+        showToast(`💚 Вы исцелили союзника (+${healAmount} ОЗ)!`);
+      },
       onMultiplayerEnemyHit: (payload) => {
         roomSessionRef.current?.sendEnemyHit(payload);
       },
@@ -1323,6 +1629,16 @@ export default function App() {
       onMultiplayerStageAdvance: (payload) => {
         roomSessionRef.current?.sendStageAdvance(payload);
       },
+      onPlayerEnemyHit: () => {
+        setHitMarkerActive(true);
+        if (hitMarkerTimerRef.current !== null) {
+          window.clearTimeout(hitMarkerTimerRef.current);
+        }
+        hitMarkerTimerRef.current = window.setTimeout(() => {
+          setHitMarkerActive(false);
+          hitMarkerTimerRef.current = null;
+        }, 120);
+      },
       onMultiplayerWorldEvent: (payload) => {
         roomSessionRef.current?.sendWorldEvent(payload);
       },
@@ -1331,6 +1647,7 @@ export default function App() {
     worldRef.current = engine;
     engine.setLabyrinthMultiplayerMode(initialLabyrinthMpMode);
     engine.setControlScheme(stateRef.current.controlScheme);
+    engine.setRadarEnabled(true);
     (window as unknown as { __voxWorld?: ArcaneWorldEngine }).__voxWorld = engine;
     if (initialModeParam !== 'arena') {
       engine.loadMapMode(initialModeParam);
@@ -1339,9 +1656,21 @@ export default function App() {
       engine.setMode('playing');
     }
 
+    const triggerVoiceMatchFlash = () => {
+      setVoiceSpellMatched(true);
+      if (voiceMatchTimerRef.current !== null) {
+        window.clearTimeout(voiceMatchTimerRef.current);
+      }
+      voiceMatchTimerRef.current = window.setTimeout(() => {
+        setVoiceSpellMatched(false);
+        voiceMatchTimerRef.current = null;
+      }, 500);
+    };
+
     // Initialize Push-To-Talk Voice Spell Recognizer ([R] key)
     const recognizer = new VoiceSpellRecognizer({
       onSpellRecognized: (spellId, _transcript, quality) => {
+        triggerVoiceMatchFlash();
         setSelectedSpellId(spellId);
         pendingVoiceSpellRef.current = {
           spellId,
@@ -1376,6 +1705,14 @@ export default function App() {
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
       window.removeEventListener('pagehide', handleBeforeUnload);
+      if (voiceMatchTimerRef.current !== null) {
+        window.clearTimeout(voiceMatchTimerRef.current);
+        voiceMatchTimerRef.current = null;
+      }
+      if (hitMarkerTimerRef.current !== null) {
+        window.clearTimeout(hitMarkerTimerRef.current);
+        hitMarkerTimerRef.current = null;
+      }
       recognizer.stop();
       roomSessionRef.current?.dispose();
       roomSessionRef.current = null;
@@ -1423,7 +1760,7 @@ export default function App() {
       document.body.dataset.state = 'playing';
       setGrimoireOpen(false);
       setEndStats(null);
-      setHudVisibilityMode('full');
+      setHudHideStep(0);
       setShowControlsHelp(targetMode === 'labyrinth' && initialStage !== 0);
       setGameState('playing');
       if (worldRef.current) {
@@ -1441,7 +1778,7 @@ export default function App() {
     setGrimoireOpen(false);
     const wasVictory = Boolean(endStats?.victory);
     setEndStats(null);
-    setHudVisibilityMode('full');
+    setHudHideStep(0);
     setShowControlsHelp(stateRef.current.mapMode === 'labyrinth');
     setGameState('playing');
     // In Shared Co-op, if a player died (not victory), respawning keeps shared enemies & walls intact!
@@ -1494,6 +1831,139 @@ export default function App() {
     }
   }, [micListening, triggerSpellCast]);
 
+  // Build unlit campfire from 3 Firewood (`ancient_wood`); only 1 campfire can exist at a time (new one replaces old)
+  const handlePlaceCampfire = useCallback(() => {
+    const woodCount = stateRef.current.reagentInventory.ancient_wood || 0;
+    if (woodCount < CAMPFIRE_WOOD_COST) {
+      showToast(`Нужно ${CAMPFIRE_WOOD_COST} дрова (сейчас: ${woodCount}). Срубите тис [E]!`);
+      return;
+    }
+    const res = worldRef.current?.placeCampfire();
+    if (res) {
+      setReagentInventory((prev) => {
+        const next = {
+          ...prev,
+          ancient_wood: Math.max(0, (prev.ancient_wood || 0) - CAMPFIRE_WOOD_COST),
+        };
+        stateRef.current.reagentInventory = next;
+        return next;
+      });
+      showToast(
+        '🪵 Костёр сложен! Зажгите Огнём [1] · Окружите 3 стенами [B] для регена ×2 · Заклинание «Домой» — [F]!'
+      );
+    }
+  }, [showToast]);
+
+  // Build a Wooden Palisade Wall (`Стена` [B]) from 2 Firewood (`ancient_wood`); builds in 2.0s, max 12 walls on map
+  const handlePlaceWall = useCallback(() => {
+    const woodCount = stateRef.current.reagentInventory.ancient_wood || 0;
+    const currentWalls = worldRef.current?.builtWalls.length ?? 0;
+    const check = canBuildWoodenWall(woodCount, currentWalls);
+    if (!check.allowed) {
+      showToast(check.reason || 'Невозможно построить стену');
+      return;
+    }
+    const wall = worldRef.current?.placeWoodenWall();
+    if (wall) {
+      setReagentInventory((prev) => {
+        const next = {
+          ...prev,
+          ancient_wood: Math.max(0, (prev.ancient_wood || 0) - WALL_WOOD_COST),
+        };
+        stateRef.current.reagentInventory = next;
+        return next;
+      });
+      showToast(
+        `🧱 Строительство стены (${WALL_BUILD_DURATION_SEC} сек)... Стены: ${
+          currentWalls + 1
+        }/${MAX_BUILT_WALLS} (сломать и вернуть +${WALL_DISMANTLE_WOOD_REFUND} дрова — [N])`
+      );
+    }
+  }, [showToast]);
+
+  // Dismantle / break player-built Wooden Wall aimed at by crosshair (`Сломать стену по наведению` [N]) and refund +1 Firewood (`ancient_wood`)
+  const handleDismantleWall = useCallback(() => {
+    const totalBuilt = worldRef.current?.builtWalls.length ?? 0;
+    if (totalBuilt === 0) {
+      showToast('На карте нет построенных стен для разбора!');
+      return;
+    }
+    const removed = worldRef.current?.dismantleNearestWoodenWall();
+    if (!removed) {
+      showToast('🎯 Наведите прицел на построенную стену, чтобы сломать её [N]!');
+      return;
+    }
+    setReagentInventory((prev) => {
+      const next = {
+        ...prev,
+        ancient_wood: (prev.ancient_wood || 0) + WALL_DISMANTLE_WOOD_REFUND,
+      };
+      stateRef.current.reagentInventory = next;
+      return next;
+    });
+    const remaining = worldRef.current?.builtWalls.length ?? 0;
+    showToast(
+      `🔨 Стена разобрана! Возвращено +${WALL_DISMANTLE_WOOD_REFUND} Дрова (осталось стен: ${remaining}/${MAX_BUILT_WALLS})`
+    );
+  }, [showToast]);
+
+  const handleUsePotion = useCallback(
+    (potionId: string) => {
+      const pot = stateRef.current.craftedPotions.find((p) => p.id === potionId);
+      if (!pot) return;
+      setCraftedPotions((prev) => {
+        const next = prev.filter((p) => p.id !== potionId);
+        stateRef.current.craftedPotions = next;
+        return next;
+      });
+      worldRef.current?.applyCraftedPotion(pot);
+      showToast(
+        `Выпито: ${pot.name} (+${pot.restoreAmount} ${
+          pot.kind === 'health' ? 'ОЗ' : 'МП'
+        })`
+      );
+    },
+    [showToast]
+  );
+
+  const handleEatFood = useCallback(
+    (foodId: string) => {
+      const food = stateRef.current.cookedFoods.find((f) => f.id === foodId);
+      if (!food) return;
+      setCookedFoods((prev) => {
+        const next = prev.filter((f) => f.id !== foodId);
+        stateRef.current.cookedFoods = next;
+        return next;
+      });
+      worldRef.current?.applyCookedFoodBuff(food);
+      showToast(
+        `Съедено: ${food.name} (+${food.bonusMaxHp} Макс. ОЗ и +${food.hpRegenPerSec} ОЗ/с на ${Math.round(
+          food.durationSec / 60
+        )} мин)`
+      );
+    },
+    [showToast]
+  );
+
+  const handleEatBatFood = useCallback(
+    (foodId: string) => {
+      const batFood = stateRef.current.cookedBatFoods.find((f) => f.id === foodId);
+      if (!batFood) return;
+      setCookedBatFoods((prev) => {
+        const next = prev.filter((f) => f.id !== foodId);
+        stateRef.current.cookedBatFoods = next;
+        return next;
+      });
+      worldRef.current?.applyCookedBatFoodBuff(batFood);
+      showToast(
+        `Съедено: ${batFood.name} (+${batFood.bonusMaxMp} Макс. МП и +${batFood.mpRegenPerSec} МП/с на ${Math.round(
+          batFood.durationSec / 60
+        )} мин)`
+      );
+    },
+    [showToast]
+  );
+
   // Global Keyboard Shortcuts
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -1530,24 +2000,27 @@ export default function App() {
         return;
       }
 
-      if (e.code === 'KeyM') {
-        setMuted((m) => {
-          const next = !m;
-          audioEngine.setMuted(next);
-          return next;
-        });
+      if (
+        (e.code === 'KeyM' || e.key === 'ь' || e.key === 'Ь') &&
+        gameState === 'playing' &&
+        !grimoireOpen &&
+        !accountModalOpen &&
+        !e.repeat
+      ) {
+        e.preventDefault();
+        toggleRadar();
         return;
       }
 
-      // 2-step [H] HUD visibility toggle:
-      // 1st press ('full' -> 'no_dock'): hides bottom spell dock
-      // 2nd press ('no_dock' -> 'hidden'): hides entire HUD except [H] hint
-      // 3rd press ('hidden' -> 'full'): restores full HUD
+      // 5-state progressive [H] HUD visibility cycle:
+      // Step 0 -> Step 1: hide top-right panel
+      // Step 1 -> Step 2: also hide top-left panel
+      // Step 2 -> Step 3: also hide bottom spell dock & [ . ] hint
+      // Step 3 -> Step 4: also hide rune drawing contour canvas (keep crosshair reticle!)
+      // Step 4 -> Step 0: restore full HUD
       if (e.code === 'KeyH' && gameState === 'playing' && !e.repeat) {
         e.preventDefault();
-        setHudVisibilityMode((prev) =>
-          prev === 'full' ? 'no_dock' : prev === 'no_dock' ? 'hidden' : 'full'
-        );
+        setHudHideStep((prev) => ((prev + 1) % 5) as 0 | 1 | 2 | 3 | 4);
         return;
       }
 
@@ -1600,51 +2073,74 @@ export default function App() {
         }
       }
 
-      if (gameState === 'playing' && !grimoireOpen) {
-        // Period [.] ('Period' / 'NumpadDecimal' / '.' / 'ю') toggles Controls Help overlay anytime!
-        if (
-          (e.code === 'Period' ||
-            e.code === 'NumpadDecimal' ||
-            e.key === '.' ||
-            e.key === 'ю' ||
-            e.key === 'Ю') &&
-          !e.repeat
-        ) {
+      const allowSpellHotkeysInTraining = grimoireOpen && grimoireTab === 'training';
+      if ((gameState === 'playing' && !grimoireOpen) || allowSpellHotkeysInTraining) {
+        if (gameState === 'playing' && !grimoireOpen) {
+          // Period [.] ('Period' / 'NumpadDecimal' / '.' / 'ю') toggles Controls Help overlay anytime!
+          if (
+            (e.code === 'Period' ||
+              e.code === 'NumpadDecimal' ||
+              e.key === '.' ||
+              e.key === 'ю' ||
+              e.key === 'Ю') &&
+            !e.repeat
+          ) {
+            e.preventDefault();
+            setShowControlsHelp((prev) => !prev);
+            return;
+          }
+
+          // Pressing any action or movement key dismisses the Controls Help overlay immediately and engages Pointer Lock in Alternative mode
+          if (
+            e.code === 'KeyW' ||
+            e.code === 'KeyA' ||
+            e.code === 'KeyS' ||
+            e.code === 'KeyD' ||
+            e.code === 'ArrowUp' ||
+            e.code === 'ArrowDown' ||
+            e.code === 'ArrowLeft' ||
+            e.code === 'ArrowRight' ||
+            e.code === 'KeyQ' ||
+            e.code === 'KeyT' ||
+            e.code === 'KeyE' ||
+            e.code === 'KeyR' ||
+            e.code === 'KeyF' ||
+            e.code === 'KeyG' ||
+            e.code === 'KeyC' ||
+            e.code === 'KeyB' ||
+            e.code === 'KeyN' ||
+            e.code === 'KeyZ' ||
+            e.code === 'KeyX' ||
+            e.code === 'KeyV' ||
+            e.code === 'Space' ||
+            e.code === 'Backquote' ||
+            e.code === 'Tab' ||
+            e.code === 'CapsLock' ||
+            /^Digit[1-6]$/.test(e.code)
+          ) {
+            if (showControlsHelp) {
+              setShowControlsHelp(false);
+            }
+            tryEngageAlternativePointerLock();
+          }
+        }
+
+        // Hotkey [Tab] selects Heal ('vera_verto') and prevents browser focus from leaving canvas
+        if (e.code === 'Tab') {
           e.preventDefault();
-          setShowControlsHelp((prev) => !prev);
+          if (!e.repeat) {
+            handleSelectSpell('vera_verto');
+          }
           return;
         }
 
-        // Pressing any action or movement key dismisses the Controls Help overlay immediately and engages Pointer Lock in Alternative mode
-        if (
-          e.code === 'KeyW' ||
-          e.code === 'KeyA' ||
-          e.code === 'KeyS' ||
-          e.code === 'KeyD' ||
-          e.code === 'ArrowUp' ||
-          e.code === 'ArrowDown' ||
-          e.code === 'ArrowLeft' ||
-          e.code === 'ArrowRight' ||
-          e.code === 'KeyQ' ||
-          e.code === 'KeyT' ||
-          e.code === 'KeyE' ||
-          e.code === 'KeyR' ||
-          e.code === 'KeyF' ||
-          e.code === 'KeyG' ||
-          e.code === 'KeyC' ||
-          e.code === 'KeyB' ||
-          e.code === 'KeyN' ||
-          e.code === 'KeyZ' ||
-          e.code === 'KeyX' ||
-          e.code === 'KeyV' ||
-          e.code === 'Space' ||
-          e.code === 'Backquote' ||
-          /^Digit[1-8]$/.test(e.code)
-        ) {
-          if (showControlsHelp) {
-            setShowControlsHelp(false);
+        // Hotkey [CapsLock] selects Arcane Sword ('arcane_sword')
+        if (e.code === 'CapsLock') {
+          e.preventDefault();
+          if (!e.repeat) {
+            handleSelectSpell('arcane_sword');
           }
-          tryEngageAlternativePointerLock();
+          return;
         }
 
         // Hotkey [Ё] (`Backquote`) selects Teleport spell
@@ -1674,8 +2170,8 @@ export default function App() {
           return;
         }
 
-        // Hotkeys 1..8 select spells ([2] Лед, [5] Тяни, [6] Рост, [7] Хил, [8] Меч)
-        const digitMatch = e.code.match(/^Digit([1-8])$/);
+        // Hotkeys 1..6 select first 6 spells ([1] Огонь .. [6] Рост)
+        const digitMatch = e.code.match(/^Digit([1-6])$/);
         if (digitMatch) {
           const idx = Number(digitMatch[1]) - 1;
           const spId = SPELL_ORDER[idx];
@@ -1684,6 +2180,9 @@ export default function App() {
           }
           return;
         }
+      }
+
+      if (gameState === 'playing' && !grimoireOpen) {
 
         // [R] Push-To-Talk Microphone ONLY (Voice casting is exclusively on [R])
         if (e.code === 'KeyR' && !e.repeat) {
@@ -1739,7 +2238,7 @@ export default function App() {
         // [Z] Drink Health Potion
         if (e.code === 'KeyZ' && !e.repeat) {
           e.preventDefault();
-          const hpPot = craftedPotions.find((p) => p.kind === 'health');
+          const hpPot = stateRef.current.craftedPotions.find((p) => p.kind === 'health');
           if (hpPot) {
             handleUsePotion(hpPot.id);
           } else {
@@ -1748,8 +2247,9 @@ export default function App() {
           return;
         }
 
-        // [X / Х] Upgrade all spells by +1 level (press 5 times to reach max Level 6 for testing)
+        // [Shift+X] Upgrade all spells by +1 level (press 5 times to reach max Level 6 for testing)
         if (
+          e.shiftKey &&
           (e.code === 'KeyX' ||
             e.code === 'BracketLeft' ||
             e.key === 'x' ||
@@ -1765,19 +2265,31 @@ export default function App() {
             audioEngine.playPickupChime();
             showToast(
               sampleLvl >= MAX_SPELL_LEVEL
-                ? `⚡ Все способности прокачаны на максимум (Ур. ${MAX_SPELL_LEVEL}/${MAX_SPELL_LEVEL}) [X]!`
-                : `⬆️ Все способности +1 уровень (теперь Ур. ${sampleLvl}/${MAX_SPELL_LEVEL}) [X]!`
+                ? `⚡ Все способности прокачаны на максимум (Ур. ${MAX_SPELL_LEVEL}/${MAX_SPELL_LEVEL}) [Shift+X]!`
+                : `⬆️ Все способности +1 уровень (теперь Ур. ${sampleLvl}/${MAX_SPELL_LEVEL}) [Shift+X]!`
             );
             return next;
           });
           return;
         }
 
+        // [X] Drink Mana Potion
+        if (e.code === 'KeyX' && !e.shiftKey && !e.repeat) {
+          e.preventDefault();
+          const mpPot = stateRef.current.craftedPotions.find((p) => p.kind === 'mana');
+          if (mpPot) {
+            handleUsePotion(mpPot.id);
+          } else {
+            showToast('Нет готового Зелья Маны (сварите у костра [I])');
+          }
+          return;
+        }
+
         // [V] Eat Cooked Rat/Boar/Bear Meal or Roasted Bat
         if (e.code === 'KeyV' && !e.repeat) {
           e.preventDefault();
-          const food = cookedFoods[0];
-          const batFood = cookedBatFoods[0];
+          const food = stateRef.current.cookedFoods[0];
+          const batFood = stateRef.current.cookedBatFoods[0];
           if (food) {
             handleEatFood(food.id);
           } else if (batFood) {
@@ -1841,25 +2353,161 @@ export default function App() {
       document.removeEventListener('pointerlockchange', onPointerLockChange);
     };
   }, [
+    accountModalOpen,
     buildMenuOpen,
-    cookedBatFoods,
-    cookedFoods,
-    craftedPotions,
     gameState,
     grimoireOpen,
     grimoireTab,
+    handleDismantleWall,
+    handleEatBatFood,
+    handleEatFood,
+    handlePlaceCampfire,
+    handlePlaceWall,
     handlePushToTalkTrigger,
     handleSelectSpell,
     handleStartGameWithMode,
     handleTogglePause,
+    handleUsePotion,
     mapMode,
     micListening,
-    reagentInventory,
     showControlsHelp,
     showToast,
+    toggleRadar,
     triggerSpellCast,
     tryEngageAlternativePointerLock,
   ]);
+
+  // 10Hz 2D Top-Down Radar Canvas Renderer (only draws while visible and playing)
+  useEffect(() => {
+    if (!radarVisible || gameState !== 'playing' || hudHideStep >= 2) return;
+    const radar = hud.radar;
+    const canvas = radarCanvasRef.current;
+    if (!radar || !canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const size = RADAR_CANVAS_SIZE;
+    const half = size / 2;
+    const scale = RADAR_PX_PER_METER;
+    ctx.clearRect(0, 0, size, size);
+
+    // Background + perimeter ring
+    ctx.fillStyle = 'rgba(10, 12, 20, 0.92)';
+    ctx.fillRect(0, 0, size, size);
+    ctx.strokeStyle = 'rgba(148, 163, 184, 0.2)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(half, half, half - 4, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Nearby labyrinth walls
+    if (radar.mapMode === 'labyrinth') {
+      const layout = getLabyrinthStageLayout(radar.stage);
+      ctx.fillStyle = 'rgba(148, 163, 184, 0.55)';
+      for (const wb of layout.wallBoxes) {
+        const x0 = half + (wb.minX - radar.playerX) * scale;
+        const x1 = half + (wb.maxX - radar.playerX) * scale;
+        const y0 = half + (wb.minZ - radar.playerZ) * scale;
+        const y1 = half + (wb.maxZ - radar.playerZ) * scale;
+        if (x1 < 0 || x0 > size || y1 < 0 || y0 > size) continue;
+        const rx = Math.max(0, x0);
+        const ry = Math.max(0, y0);
+        const rw = Math.min(size, x1) - rx;
+        const rh = Math.min(size, y1) - ry;
+        if (rw > 0.4 && rh > 0.4) {
+          ctx.fillRect(rx, ry, Math.max(1.2, rw), Math.max(1.2, rh));
+        }
+      }
+    }
+
+    // Unopened chests (gold)
+    ctx.fillStyle = '#facc15';
+    for (const ch of radar.unopenedChests) {
+      const pt = projectRadarPoint(ch.x, ch.z, radar.playerX, radar.playerZ);
+      if (pt.cx >= 2 && pt.cx <= size - 2 && pt.cy >= 2 && pt.cy <= size - 2) {
+        ctx.fillRect(pt.cx - 2.5, pt.cy - 2.5, 5, 5);
+      }
+    }
+
+    // Unactivated rune gate buttons (elemental color dots)
+    for (const btn of radar.unactivatedButtons) {
+      const pt = projectRadarPoint(btn.x, btn.z, radar.playerX, radar.playerZ);
+      if (pt.cx >= 2 && pt.cx <= size - 2 && pt.cy >= 2 && pt.cy <= size - 2) {
+        ctx.fillStyle = btn.color;
+        ctx.beginPath();
+        ctx.arc(pt.cx, pt.cy, 2.8, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // Lit campfire (orange)
+    if (radar.litCampfire) {
+      const pt = projectRadarPoint(
+        radar.litCampfire.x,
+        radar.litCampfire.z,
+        radar.playerX,
+        radar.playerZ
+      );
+      if (pt.cx >= 2 && pt.cx <= size - 2 && pt.cy >= 2 && pt.cy <= size - 2) {
+        ctx.fillStyle = '#fb923c';
+        ctx.beginPath();
+        ctx.arc(pt.cx, pt.cy, 3.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // Finish portal (cyan, clamped to radar edge if far away)
+    if (radar.goalPortal) {
+      const pt = projectRadarPoint(
+        radar.goalPortal.x,
+        radar.goalPortal.z,
+        radar.playerX,
+        radar.playerZ
+      );
+      let gx = pt.cx;
+      let gy = pt.cy;
+      const dx = gx - half;
+      const dy = gy - half;
+      const rPx = Math.hypot(dx, dy);
+      if (rPx > half - 6) {
+        const k = (half - 6) / rPx;
+        gx = half + dx * k;
+        gy = half + dy * k;
+      }
+      ctx.fillStyle = '#22d3ee';
+      ctx.beginPath();
+      ctx.arc(gx, gy, 3.8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // Remote co-op players (green)
+    ctx.fillStyle = '#4ade80';
+    for (const rp of radar.remotePlayers) {
+      const pt = projectRadarPoint(rp.x, rp.z, radar.playerX, radar.playerZ);
+      if (pt.cx >= 2 && pt.cx <= size - 2 && pt.cy >= 2 && pt.cy <= size - 2) {
+        ctx.beginPath();
+        ctx.arc(pt.cx, pt.cy, 3.3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // Player view cone + white dot at center
+    const lookAngle = Math.atan2(-Math.cos(radar.playerYaw), -Math.sin(radar.playerYaw));
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.28)';
+    ctx.beginPath();
+    ctx.moveTo(half, half);
+    ctx.arc(half, half, 17, lookAngle - 0.42, lookAngle + 0.42);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(half, half, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }, [gameState, hud.radar, hudHideStep, radarVisible]);
 
   // Draw live rune guide & player mouse stroke on the center HUD overlay canvas
   const renderHudRuneOverlay = useCallback(
@@ -1879,12 +2527,12 @@ export default function App() {
       ctx.save();
       ctx.strokeStyle = gestureInfo.isContextual
         ? showGuide
-          ? 'rgba(56, 189, 248, 0.88)'
-          : 'rgba(56, 189, 248, 0.42)'
+          ? 'rgba(56, 189, 248, 0.45)'
+          : 'rgba(56, 189, 248, 0.3)'
         : showGuide
-        ? 'rgba(245, 158, 11, 0.72)'
-        : 'rgba(245, 158, 11, 0.24)';
-      ctx.lineWidth = showGuide ? 5 : 3.2;
+        ? 'rgba(245, 158, 11, 0.38)'
+        : 'rgba(245, 158, 11, 0.22)';
+      ctx.lineWidth = showGuide ? 3.2 : 2.6;
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       ctx.setLineDash([7, 6]);
@@ -1899,12 +2547,14 @@ export default function App() {
 
       const first = gestureInfo.templatePoints[0];
       ctx.fillStyle = gestureInfo.isContextual
-        ? '#38bdf8'
+        ? showGuide
+          ? 'rgba(56, 189, 248, 0.65)'
+          : 'rgba(56, 189, 248, 0.5)'
         : showGuide
-        ? '#fde047'
-        : 'rgba(253, 224, 71, 0.5)';
+        ? 'rgba(253, 224, 71, 0.62)'
+        : 'rgba(253, 224, 71, 0.45)';
       ctx.beginPath();
-      ctx.arc(first.x * w, first.y * h, showGuide ? 6 : 4, 0, Math.PI * 2);
+      ctx.arc(first.x * w, first.y * h, showGuide ? 4.5 : 3.5, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
 
@@ -2439,70 +3089,6 @@ export default function App() {
     showToast(`Награда получена: +${res.rewardXp} XP · ${res.claimedQuest.rewardStat}`);
   };
 
-  // Build unlit campfire from 3 Firewood (`ancient_wood`); only 1 campfire can exist at a time (new one replaces old)
-  const handlePlaceCampfire = () => {
-    const woodCount = reagentInventory.ancient_wood || 0;
-    if (woodCount < CAMPFIRE_WOOD_COST) {
-      showToast(`Нужно ${CAMPFIRE_WOOD_COST} дрова (сейчас: ${woodCount}). Срубите тис [E]!`);
-      return;
-    }
-    const res = worldRef.current?.placeCampfire();
-    if (res) {
-      setReagentInventory((prev) => ({
-        ...prev,
-        ancient_wood: Math.max(0, (prev.ancient_wood || 0) - CAMPFIRE_WOOD_COST),
-      }));
-      showToast(
-        '🪵 Костёр сложен! Зажгите Огнём [1] · Окружите 3 стенами [B] для регена ×2 · Заклинание «Домой» — [F]!'
-      );
-    }
-  };
-
-  // Build a Wooden Palisade Wall (`Стена` [B]) from 2 Firewood (`ancient_wood`); builds in 2.0s, max 12 walls on map
-  const handlePlaceWall = () => {
-    const woodCount = reagentInventory.ancient_wood || 0;
-    const currentWalls = worldRef.current?.builtWalls.length ?? (hud.builtWallsCount || 0);
-    const check = canBuildWoodenWall(woodCount, currentWalls);
-    if (!check.allowed) {
-      showToast(check.reason || 'Невозможно построить стену');
-      return;
-    }
-    const wall = worldRef.current?.placeWoodenWall();
-    if (wall) {
-      setReagentInventory((prev) => ({
-        ...prev,
-        ancient_wood: Math.max(0, (prev.ancient_wood || 0) - WALL_WOOD_COST),
-      }));
-      showToast(
-        `🧱 Строительство стены (${WALL_BUILD_DURATION_SEC} сек)... Стены: ${
-          currentWalls + 1
-        }/${MAX_BUILT_WALLS} (сломать и вернуть +${WALL_DISMANTLE_WOOD_REFUND} дрова — [N])`
-      );
-    }
-  };
-
-  // Dismantle / break player-built Wooden Wall aimed at by crosshair (`Сломать стену по наведению` [N]) and refund +1 Firewood (`ancient_wood`)
-  const handleDismantleWall = () => {
-    const totalBuilt = worldRef.current?.builtWalls.length ?? 0;
-    if (totalBuilt === 0) {
-      showToast('На карте нет построенных стен для разбора!');
-      return;
-    }
-    const removed = worldRef.current?.dismantleNearestWoodenWall();
-    if (!removed) {
-      showToast('🎯 Наведите прицел на построенную стену, чтобы сломать её [N]!');
-      return;
-    }
-    setReagentInventory((prev) => ({
-      ...prev,
-      ancient_wood: (prev.ancient_wood || 0) + WALL_DISMANTLE_WOOD_REFUND,
-    }));
-    const remaining = worldRef.current?.builtWalls.length ?? 0;
-    showToast(
-      `🔨 Стена разобрана! Возвращено +${WALL_DISMANTLE_WOOD_REFUND} Дрова (осталось стен: ${remaining}/${MAX_BUILT_WALLS})`
-    );
-  };
-
   // Craft Potion or Cook Rat/Boar/Bear/Bat Meat at a lit campfire based on drawing accuracy
   const handleCraftAtCampfire = (recipeId: CampfireRecipeId, accuracy: number) => {
     if (hud.campfireStatus !== 'lit_in_aura') {
@@ -2667,42 +3253,6 @@ export default function App() {
       `🧪 Сварено: ${potion.name} (+${potion.restoreAmount} ${
         kind === 'health' ? 'ОЗ' : 'МП'
       })`
-    );
-  };
-
-  const handleUsePotion = (potionId: string) => {
-    const pot = craftedPotions.find((p) => p.id === potionId);
-    if (!pot) return;
-    setCraftedPotions((prev) => prev.filter((p) => p.id !== potionId));
-    worldRef.current?.applyCraftedPotion(pot);
-    showToast(
-      `Выпито: ${pot.name} (+${pot.restoreAmount} ${
-        pot.kind === 'health' ? 'ОЗ' : 'МП'
-      })`
-    );
-  };
-
-  const handleEatFood = (foodId: string) => {
-    const food = cookedFoods.find((f) => f.id === foodId);
-    if (!food) return;
-    setCookedFoods((prev) => prev.filter((f) => f.id !== foodId));
-    worldRef.current?.applyCookedFoodBuff(food);
-    showToast(
-      `Съедено: ${food.name} (+${food.bonusMaxHp} Макс. ОЗ и +${food.hpRegenPerSec} ОЗ/с на ${Math.round(
-        food.durationSec / 60
-      )} мин)`
-    );
-  };
-
-  const handleEatBatFood = (foodId: string) => {
-    const batFood = cookedBatFoods.find((f) => f.id === foodId);
-    if (!batFood) return;
-    setCookedBatFoods((prev) => prev.filter((f) => f.id !== foodId));
-    worldRef.current?.applyCookedBatFoodBuff(batFood);
-    showToast(
-      `Съедено: ${batFood.name} (+${batFood.bonusMaxMp} Макс. МП и +${batFood.mpRegenPerSec} МП/с на ${Math.round(
-        batFood.durationSec / 60
-      )} мин)`
     );
   };
 
@@ -3132,19 +3682,20 @@ export default function App() {
           </div>
 
           <div className="text-xs text-[#cbd5e1] tracking-wide font-mono-num pt-2">
-            WASD Движение · ЛКМ Осмотр · ПКМ Рисовать · [R] Микрофон · [I] Артефакты · [U] Заклинания · [Y] Квесты · [Esc] Настройки
+            WASD Движение · {controlScheme === 'alternative' ? 'Мышь Осмотр · ЛКМ Быстрый каст' : 'ЛКМ Осмотр'} · ПКМ Рисовать · [R] Микрофон · [M] Радар · [Esc] Настройки
           </div>
         </div>
       )}
 
       {/* =====================================================================
-          2. PLAYING HUD OVERLAY (Clean, Decluttered Combat Interface with 2-Step [H] Toggle)
+          2. PLAYING HUD OVERLAY (Clean, Decluttered Combat Interface with 5-State [H] Toggle)
          ===================================================================== */}
       {gameState === 'playing' && (
         <div className="fixed inset-0 z-20 pointer-events-none">
-          {/* TOP-LEFT PERIMETER CLUSTER (Hidden only when hudVisibilityMode === 'hidden') */}
-          {hudVisibilityMode !== 'hidden' && (
+          {/* TOP-LEFT PERIMETER CLUSTER (Hidden at hudHideStep >= 2) */}
+          {hudHideStep < 2 && (
             <div
+              data-testid="hud-top-left-panel"
               className="absolute top-4 left-4 p-3 rounded-xl border border-[#3b3154] space-y-2 pointer-events-auto w-[250px]"
               style={{ backgroundColor: 'rgba(14, 12, 22, 0.88)' }}
             >
@@ -3208,6 +3759,55 @@ export default function App() {
                   </span>
                 </div>
               </div>
+
+              {/* Compact 120x120 2D Top-Down Radar ([Tab / M] toggles visibility & saves FPS when hidden) */}
+              {radarVisible ? (
+                <div
+                  data-testid="hud-radar-container"
+                  className="flex items-start justify-between gap-2 pt-0.5"
+                >
+                  <div className="relative w-[120px] h-[120px] rounded-lg overflow-hidden border border-[#3b3154] bg-[#0a0c14] shrink-0">
+                    <canvas
+                      ref={radarCanvasRef}
+                      width={RADAR_CANVAS_SIZE}
+                      height={RADAR_CANVAS_SIZE}
+                      data-testid="hud-radar-canvas"
+                      className="block w-[120px] h-[120px]"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1 text-[10px] font-mono-num text-[#cbd5e1] leading-tight">
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      data-testid="hud-radar-toggle-btn"
+                      onClick={(e) => {
+                        e.currentTarget.blur();
+                        toggleRadar();
+                      }}
+                      className="px-1.5 py-0.5 rounded bg-[#181426] hover:bg-[#26203b] border border-[#3b3154] text-[#fde047] font-bold text-left cursor-pointer"
+                    >
+                      [M] Скрыть
+                    </button>
+                    <span className="text-[#22d3ee]">● Портал</span>
+                    <span className="text-[#facc15]">■ Сундук</span>
+                    <span className="text-[#fb923c]">● Костёр</span>
+                    <span className="text-[#4ade80]">● Союзник</span>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  data-testid="hud-radar-restore-btn"
+                  onClick={(e) => {
+                    e.currentTarget.blur();
+                    toggleRadar();
+                  }}
+                  className="w-full px-2 py-1 rounded-lg border border-[#3b3154] bg-[#14111f] hover:bg-[#211c33] text-[10px] font-mono-num font-bold text-[#94a3b8] hover:text-[#fde047] text-left cursor-pointer"
+                >
+                  🗺️ Радар выкл · [M] вернуть
+                </button>
+              )}
 
               {/* Active Campfire Aura Indicator (Small Radius <= 4.2m; 2x Regen when surrounded by >= 3 built walls!) */}
               {hud.campfireStatus === 'lit_in_aura' && (
@@ -3290,7 +3890,7 @@ export default function App() {
           )}
 
           {/* TOP-CENTER BOSS HP BAR (Stage Bosses 1..4 & Stage 5 Splitting Worm Boss Phases 1/2/3) */}
-          {hudVisibilityMode !== 'hidden' && hud.bossInfo && (
+          {hudHideStep < 2 && hud.bossInfo && (
             <div
               data-testid="hud-boss-bar"
               className="fixed top-4 left-[41%] -translate-x-1/2 z-20 w-[280px] sm:w-[330px] p-2 rounded-xl border-2 border-[#ef4444] shadow-2xl pointer-events-none"
@@ -3318,7 +3918,7 @@ export default function App() {
           )}
 
           {/* TOP-CENTER STAGE 0 TUTORIAL & PREPARATION CHECKLIST BANNER */}
-          {hudVisibilityMode !== 'hidden' && hud.stage0Tutorial && (
+          {hudHideStep < 2 && hud.stage0Tutorial && (
             <div
               data-testid="hud-stage0-tutorial-banner"
               className="fixed top-4 left-[40%] -translate-x-1/2 z-20 w-[320px] sm:w-[430px] p-2.5 rounded-xl border-2 border-[#38bdf8] shadow-2xl pointer-events-auto"
@@ -3328,8 +3928,8 @@ export default function App() {
                 <span>🎓 УРОВЕНЬ 0: ПОДГОТОВИТЕЛЬНЫЙ ЗАЛ</span>
                 <span className="text-[#38bdf8]">
                   {hud.stage0Tutorial.completed
-                    ? '12/12 · Портал открыт!'
-                    : `Этап ${hud.stage0Tutorial.phase}/3 · Враг ${Math.min(
+                    ? `${hud.stage0Tutorial.totalSteps}/${hud.stage0Tutorial.totalSteps} · Портал открыт!`
+                    : `Этап ${hud.stage0Tutorial.phase}/4 · Враг ${Math.min(
                         hud.stage0Tutorial.totalSteps,
                         hud.stage0Tutorial.stepIndex + 1
                       )}/${hud.stage0Tutorial.totalSteps}`}
@@ -3345,7 +3945,7 @@ export default function App() {
                   className="mt-2.5 p-2.5 rounded-lg bg-[#181429] border border-[#f59e0b] space-y-1.5 text-[11px] font-mono-num"
                 >
                   <div className="font-bold text-[#fde047]">
-                    📋 Задание перед 3-й волной (выполните все 4 пункта, чтобы вышли враги):
+                    📋 Задание перед 4-й волной (выполните все 4 пункта, чтобы вышли враги):
                   </div>
                   <div className="grid grid-cols-2 gap-1.5 text-[#e2e8f0]">
                     <div
@@ -3393,9 +3993,12 @@ export default function App() {
             </div>
           )}
 
-          {/* TOP-RIGHT PERIMETER CLUSTER: Push-To-Talk Mic [R] + Construction Dropdown (Костёр / Стена / Сломать) + Artifacts [I] + Quests [Y] + Unified Pause/Settings [Esc] */}
-          {hudVisibilityMode !== 'hidden' && (
-            <div className="absolute top-4 right-4 flex items-center gap-2 pointer-events-auto">
+          {/* TOP-RIGHT PERIMETER CLUSTER: Push-To-Talk Mic [R] + Construction Dropdown (Костёр / Стена / Сломать) + Inventory [I] + Unified Pause/Settings [Esc] (Hidden at hudHideStep >= 1) */}
+          {hudHideStep < 1 && (
+            <div
+              data-testid="hud-top-right-panel"
+              className="absolute top-4 right-4 flex items-center gap-2 pointer-events-auto"
+            >
               <button
                 type="button"
                 tabIndex={-1}
@@ -3556,25 +4159,68 @@ export default function App() {
           )}
 
           {/* STRICTLY FIXED-POSITION CENTER RETICLE & RUNE GESTURE CANVAS */}
-          <div
-            className={`fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[220px] h-[220px] flex items-center justify-center pointer-events-none ${
-              hudVisibilityMode === 'hidden' ? 'opacity-0' : 'opacity-100'
-            }`}
-          >
+          <div className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[220px] h-[220px] flex items-center justify-center pointer-events-none">
             <canvas
               ref={gestureOverlayCanvasRef}
               width={220}
               height={220}
-              className="w-[220px] h-[220px] pointer-events-none"
+              data-testid="gesture-overlay-canvas"
+              className={`w-[220px] h-[220px] pointer-events-none ${
+                hudHideStep >= 4 ? 'opacity-0' : 'opacity-100'
+              }`}
             />
-            <svg viewBox="0 0 32 32" className="absolute w-7 h-7 opacity-80" aria-hidden="true">
-              <circle cx="16" cy="16" r="9" fill="none" stroke="#f59e0b" strokeWidth="1.5" />
-              <circle cx="16" cy="16" r="2" fill="#38bdf8" />
+            <svg
+              viewBox="0 0 32 32"
+              data-testid="center-reticle-svg"
+              className={`absolute w-7 h-7 transition-transform duration-75 ${
+                hitMarkerActive ? 'scale-135 opacity-100' : 'scale-100 opacity-80'
+              }`}
+              aria-hidden="true"
+            >
+              <circle
+                cx="16"
+                cy="16"
+                r="9"
+                fill="none"
+                stroke={hitMarkerActive ? '#ef4444' : '#f59e0b'}
+                strokeWidth={hitMarkerActive ? '2.2' : '1.5'}
+              />
+              {hitMarkerActive && (
+                <g stroke="#fde047" strokeWidth="2" strokeLinecap="round">
+                  <line x1="5" y1="5" x2="9.5" y2="9.5" />
+                  <line x1="27" y1="5" x2="22.5" y2="9.5" />
+                  <line x1="5" y1="27" x2="9.5" y2="22.5" />
+                  <line x1="27" y1="27" x2="22.5" y2="22.5" />
+                </g>
+              )}
+              <circle
+                cx="16"
+                cy="16"
+                r={hitMarkerActive ? '2.6' : '2'}
+                fill={hitMarkerActive ? '#fde047' : '#38bdf8'}
+              />
             </svg>
+            {(micListening || voiceSpellMatched) && (
+              <div
+                data-testid="voice-mic-badge"
+                aria-hidden="true"
+                className={`absolute left-[120px] top-[76px] w-6 h-6 rounded-full border flex items-center justify-center shadow-md pointer-events-none ${
+                  voiceSpellMatched
+                    ? 'bg-[#16a34a]/90 border-[#4ade80] text-white'
+                    : 'bg-[#dc2626]/90 border-[#f87171] text-white animate-pulse'
+                }`}
+              >
+                <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                  <line x1="12" y1="19" x2="12" y2="22" />
+                </svg>
+              </div>
+            )}
           </div>
 
           {/* SEPARATE STATUS BANNERS CONTAINER BELOW THE CENTER CANVAS (Never shifts the rune contour!) */}
-          {hudVisibilityMode !== 'hidden' && (
+          {hudHideStep < 4 && (
             <div className="fixed left-1/2 top-[calc(50%+114px)] -translate-x-1/2 flex flex-col items-center pointer-events-none">
 
               {/* Contextual Water / Snow Gesture Indicator */}
@@ -3763,21 +4409,6 @@ export default function App() {
                 </div>
               )}
 
-              {/* Minimal Single-Line Cast Feedback (Only Damage or Heal value) */}
-              {hud.lastCastBanner && (
-                <div
-                  className="mt-1.5 px-3.5 py-1 rounded-lg border border-[#3b3154] text-center whitespace-nowrap"
-                  style={{ backgroundColor: 'rgba(14, 12, 22, 0.92)' }}
-                >
-                  <div
-                    className="text-sm font-bold font-mono-num"
-                    style={{ color: hud.lastCastBanner.color }}
-                  >
-                    {hud.lastCastBanner.spellName}
-                  </div>
-                </div>
-              )}
-
               {/* Celebratory Quest Completed Banner (Click to open Quests tab & claim reward!) */}
               {questCompletedBanner && (
                 <div
@@ -3811,7 +4442,7 @@ export default function App() {
               CONTROLS HELP OVERLAY (Shown at Labyrinth start & toggled via [.] Period key;
               auto-closes after 15s or on any action key!)
              ===================================================================== */}
-          {showControlsHelp && hudVisibilityMode !== 'hidden' && (
+          {showControlsHelp && hudHideStep < 3 && (
             <div
               data-testid="controls-help-overlay"
               className={`fixed ${
@@ -3825,28 +4456,10 @@ export default function App() {
                 <div className="flex items-center justify-between border-b border-[#2a233d] pb-2 gap-2 flex-wrap">
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-bold text-[#fde047] font-display">
-                      ⌨️ Управление ({controlScheme === 'alternative' ? '⚡ Альтернативное' : '🪄 Классическое'})
+                      ⌨️ Управление ({controlScheme === 'alternative' ? '⚡ Основное (Лёгкое)' : '🪄 Классическое'})
                     </span>
                   </div>
                   <div className="flex items-center gap-1.5 pointer-events-auto">
-                    <button
-                      type="button"
-                      data-testid="help-toggle-control-scheme-btn"
-                      onClick={() =>
-                        handleSelectControlScheme(
-                          controlScheme === 'alternative' ? 'classic' : 'alternative'
-                        )
-                      }
-                      className={`px-2.5 py-0.5 text-[11px] font-bold rounded border cursor-pointer transition-colors ${
-                        controlScheme === 'alternative'
-                          ? 'bg-[#132a1f] border-[#22c55e] text-[#bbf7d0]'
-                          : 'bg-[#1e293b] border-[#38bdf8] text-[#bae6fd]'
-                      }`}
-                    >
-                      {controlScheme === 'alternative'
-                        ? '⚡ Режим: Альтернативный (Легче) ⇄'
-                        : '🪄 Сменить на Альтернативное (Легче) ⇄'}
-                    </button>
                     <button
                       type="button"
                       onClick={() => setShowControlsHelp(false)}
@@ -3885,7 +4498,7 @@ export default function App() {
                   <div className="flex items-center justify-between py-0.5">
                     <span className="text-[#94a3b8]">Выбор заклинаний:</span>
                     <strong className="text-[#fde047]">
-                      Колесо мыши / [1–8], [Ё], [F], [G]
+                      Колесо мыши / [1–6], [Tab] Лечение, [Caps] Меч, [Ё], [F], [G]
                     </strong>
                   </div>
                   <div className="flex items-center justify-between py-0.5">
@@ -3913,7 +4526,7 @@ export default function App() {
                     <strong className="text-[#38bdf8]">[I] / [U] / [Y]</strong>
                   </div>
                   <div className="flex items-center justify-between py-0.5">
-                    <span className="text-[#94a3b8]">Пауза и Настройки (Звук / Графика):</span>
+                    <span className="text-[#94a3b8]">Пауза и Настройки (Звук / Управление):</span>
                     <strong className="text-[#fde047]">[Esc]</strong>
                   </div>
                   <div className="flex items-center justify-between py-0.5">
@@ -3921,26 +4534,32 @@ export default function App() {
                     <strong className="text-[#4ade80]">[Z] / [X] / [V]</strong>
                   </div>
                   <div className="flex items-center justify-between py-0.5">
-                    <span className="text-[#94a3b8]">Скрыть панель / весь интерфейс:</span>
-                    <strong className="text-[#fde047]">[H] (2 нажатия)</strong>
+                    <span className="text-[#94a3b8]">Скрыть интерфейс по шагам:</span>
+                    <strong className="text-[#fde047]">[H] (5 нажатий)</strong>
+                  </div>
+                  <div className="flex items-center justify-between py-0.5">
+                    <span className="text-[#94a3b8]">Мини-радар (вкл / выкл для FPS):</span>
+                    <strong className="text-[#38bdf8]">[M]</strong>
                   </div>
                 </div>
 
                 <div className="text-[11px] text-center text-[#a39bb5] pt-1 border-t border-[#2a233d]">
-                  Нажмите <strong>[ . ] (Точка)</strong> в любой момент, чтобы снова открыть подсказку · Исчезнет сама через 15 сек или при начале движения
+                  Нажмите <strong>[ . ] (Точка)</strong> в любой момент, чтобы снова открыть подсказку · Режим управления можно сменить в Настройках <strong>[Esc]</strong>
                 </div>
               </div>
             </div>
           )}
 
           {/* =====================================================================
-              MINIMAL BOTTOM SPELL DOCK + 2-STEP [H] HINT
-              - 'full': Shows [H] hint + full 9-spell dock ([1..7], [Ё] Прыжок, [F] Костёр)
-              - 'no_dock': Hides bottom dock, shows [H] hint to hide entire HUD
-              - 'hidden': Hides entire HUD, leaves ONLY [H] hint to restore interface!
+              MINIMAL BOTTOM SPELL DOCK + 5-STATE PROGRESSIVE [H] HIDE
+              - Step 0: Full interface
+              - Step 1: Hide top-right panel
+              - Step 2: Also hide top-left panel
+              - Step 3: Also hide bottom dock & [ . ] button
+              - Step 4: Also hide rune contour canvas (keep crosshair SVG!)
              ===================================================================== */}
-          <div className="fixed bottom-3 left-1/2 -translate-x-1/2 w-full max-w-[850px] px-4 flex flex-col items-center gap-1.5 pointer-events-auto">
-            {/* [H] Visibility Hint Badge (Always visible, and the ONLY visible element when hudVisibilityMode === 'hidden'!) */}
+          <div className="fixed bottom-3 left-1/2 -translate-x-1/2 w-full max-w-[890px] px-4 flex flex-col items-center gap-1.5 pointer-events-auto">
+            {/* [H] Visibility Hint Badge (Always visible, including Step 4!) */}
             <div className="flex items-center gap-2">
               <button
                 type="button"
@@ -3948,23 +4567,18 @@ export default function App() {
                 data-testid="hud-visibility-toggle"
                 onClick={(e) => {
                   e.currentTarget.blur();
-                  setHudVisibilityMode((prev) =>
-                    prev === 'full' ? 'no_dock' : prev === 'no_dock' ? 'hidden' : 'full'
-                  );
+                  setHudHideStep((prev) => ((prev + 1) % 5) as 0 | 1 | 2 | 3 | 4);
                 }}
                 className="px-3 py-1 rounded-lg border border-[#3b3154] bg-[#14111f]/90 hover:bg-[#231e36] text-[11px] font-mono-num text-[#cbd5e1] transition-colors cursor-pointer"
               >
-                {hudVisibilityMode === 'full'
-                  ? '[H] Скрыть нижнюю панель'
-                  : hudVisibilityMode === 'no_dock'
-                  ? '[H] Скрыть весь интерфейс'
-                  : '[H] Вернуть интерфейс'}
+                {hudHideStep < 4 ? '[H] Скрыть интерфейс' : '[H] Вернуть интерфейс'}
               </button>
 
-              {hudVisibilityMode !== 'hidden' && (
+              {hudHideStep < 3 && (
                 <button
                   type="button"
                   tabIndex={-1}
+                  data-testid="controls-help-toggle-btn"
                   onClick={(e) => {
                     e.currentTarget.blur();
                     setShowControlsHelp((prev) => !prev);
@@ -3976,120 +4590,14 @@ export default function App() {
               )}
             </div>
 
-            {hudVisibilityMode === 'full' && (
-              <div
-                className="w-full p-2 rounded-xl border border-[#3b3154] shadow-2xl grid grid-cols-11 gap-1.5"
-                style={{ backgroundColor: 'rgba(14, 12, 22, 0.92)' }}
-              >
-                {SPELL_ORDER.map((spId) => {
-                  const sp = SPELLS[spId];
-                  const isSelected = selectedSpellId === spId;
-                  const cd = hud.spellCooldowns?.[spId] || 0;
-                  const maxCd = getSpellCooldownForLevel(spId, spellLevels[spId] || 1);
-                  const onCooldown = cd > 0.05;
-                  const dockGesture = getActiveSpellGestureInfo(spId, hud.aimSurfaceTarget);
-                  const svgPoints = dockGesture.templatePoints
-                    .map((p) => `${Math.round(p.x * 36)},${Math.round(p.y * 36)}`)
-                    .join(' ');
-                  const hotkeyLabel = getSpellHotkeyLabel(spId);
-
-                  return (
-                    <button
-                      key={sp.id}
-                      type="button"
-                      data-testid={`spell-dock-btn-${sp.id}`}
-                      onClick={() => handleSelectSpell(sp.id)}
-                      className={`relative overflow-hidden py-2 px-1.5 rounded-lg border flex flex-col items-center justify-center gap-1 transition-all cursor-pointer ${
-                        isSelected
-                          ? 'bg-[#261f3d]'
-                          : 'bg-[#161321] border-[#2a233d] hover:border-[#4c3d75]'
-                      }`}
-                      style={isSelected ? { borderColor: sp.color } : undefined}
-                    >
-                      {/* Visual Cooldown Progress Fill */}
-                      {onCooldown && (
-                        <div
-                          className="absolute bottom-0 left-0 right-0 bg-[#09080d]/85 pointer-events-none transition-all duration-100 flex items-center justify-center"
-                          style={{
-                            height: `${Math.min(100, (cd / maxCd) * 100)}%`,
-                          }}
-                        />
-                      )}
-
-                      {/* Key Badge */}
-                      <span className="relative text-[11px] font-bold font-mono-num text-[#fde047] leading-none">
-                        [{hotkeyLabel}]
-                      </span>
-
-                      {/* Gesture Drawing SVG Icon */}
-                      <svg
-                        viewBox="0 0 36 36"
-                        className="relative w-7 h-7 overflow-visible"
-                        aria-hidden="true"
-                      >
-                        {sp.id === 'arcane_sword' ? (
-                          <g>
-                            <polygon
-                              points="15.8,31.5 15.8,23 14.8,10 18,2.8 21.2,10 20.2,23 20.2,31.5"
-                              fill="rgba(251, 191, 36, 0.28)"
-                              stroke={sp.color}
-                              strokeWidth="2.3"
-                              strokeLinejoin="round"
-                            />
-                            <line
-                              x1="15.8"
-                              y1="23"
-                              x2="20.2"
-                              y2="23"
-                              stroke="rgba(245, 158, 11, 0.55)"
-                              strokeWidth="1.4"
-                              strokeDasharray="1.5 1.5"
-                            />
-                          </g>
-                        ) : sp.id === 'cooldown_reset' ? (
-                          <g>
-                            <polyline
-                              points={svgPoints}
-                              fill="rgba(45, 212, 191, 0.18)"
-                              stroke={sp.color}
-                              strokeWidth="2.5"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            />
-                            <circle cx="7" cy="5" r="2.2" fill="#fde047" />
-                          </g>
-                        ) : (
-                          <polyline
-                            points={svgPoints}
-                            fill="none"
-                            stroke={sp.color}
-                            strokeWidth="3"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                          />
-                        )}
-                      </svg>
-
-                      {/* Short Spell Word */}
-                      <span
-                        className={`relative font-bold leading-none whitespace-nowrap ${
-                          sp.shortWord.length > 8 ? 'text-[9.5px] tracking-tighter' : 'text-xs'
-                        }`}
-                        style={{ color: sp.color }}
-                      >
-                        {sp.shortWord}
-                      </span>
-
-                      {/* Cooldown Countdown Overlay Number when active */}
-                      {onCooldown && (
-                        <span className="absolute inset-0 flex items-center justify-center text-xs font-bold font-mono-num text-white hud-stroke">
-                          {Math.ceil(cd)}с
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
+            {hudHideStep < 3 && (
+              <SpellDockGrid
+                selectedSpellId={selectedSpellId}
+                spellLevels={spellLevels}
+                aimSurfaceTarget={hud.aimSurfaceTarget}
+                spellCooldowns={hud.spellCooldowns}
+                onSelectSpell={handleSelectSpell}
+              />
             )}
           </div>
         </div>
@@ -4145,8 +4653,9 @@ export default function App() {
           onUsePotion={handleUsePotion}
           onEatFood={handleEatFood}
           onEatBatFood={handleEatBatFood}
-          onPracticeGestureComplete={(acc, complete) => {
-            const earnedXp = calculatePracticeGestureXp(acc);
+          onPracticeGestureComplete={(acc, complete, xpMultiplier = 1) => {
+            const mult = Math.max(1, Math.round(xpMultiplier ?? 1));
+            const earnedXp = calculatePracticeGestureXp(acc) * mult;
             if (earnedXp > 0) {
               grantXp(earnedXp);
               if (complete || acc >= 75) {
@@ -4218,7 +4727,7 @@ export default function App() {
                       : 'bg-[#132a1f] border-[#22c55e] text-[#bbf7d0]'
                   }`}
                 >
-                  {muted ? '🔇 Мут: ВКЛ [M]' : '🔊 Звук: ВКЛ [M]'}
+                  {muted ? '🔇 Мут: ВКЛ' : '🔊 Звук: ВКЛ'}
                 </button>
               </div>
               <div className="flex items-center gap-3">
@@ -4245,7 +4754,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* CONTROL SCHEME SETTINGS (Classic vs Alternative Easy/Action Mode for Friends) */}
+            {/* CONTROL SCHEME SETTINGS (Alternative Easy/Action Mode Primary, Classic in Settings) */}
             <div
               data-testid="pause-control-scheme-settings"
               className="p-3.5 rounded-xl bg-[#1b1729] border border-[#2a233d] text-left space-y-2"
@@ -4255,10 +4764,22 @@ export default function App() {
                   🎮 Режим управления
                 </span>
                 <span className="text-[10px] font-mono-num text-[#38bdf8]">
-                  {controlScheme === 'alternative' ? '⚡ Удобнее и легче в бою' : '🪄 Стандартное'}
+                  {controlScheme === 'alternative' ? '⚡ Основное (Лёгкое)' : '🪄 Классическое'}
                 </span>
               </div>
               <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  data-testid="control-scheme-alternative-btn"
+                  onClick={() => handleSelectControlScheme('alternative')}
+                  className={`py-2 px-2.5 rounded-lg border text-xs font-bold transition-colors cursor-pointer ${
+                    controlScheme === 'alternative'
+                      ? 'bg-[#132a1f] border-[#22c55e] text-[#bbf7d0] shadow-md'
+                      : 'bg-[#12101b] border-[#2a233d] text-[#94a3b8] hover:text-white'
+                  }`}
+                >
+                  ⚡ Основное (Лёгкое)
+                </button>
                 <button
                   type="button"
                   data-testid="control-scheme-classic-btn"
@@ -4269,19 +4790,7 @@ export default function App() {
                       : 'bg-[#12101b] border-[#2a233d] text-[#94a3b8] hover:text-white'
                   }`}
                 >
-                  🪄 Классическое (Как есть)
-                </button>
-                <button
-                  type="button"
-                  data-testid="control-scheme-alternative-btn"
-                  onClick={() => handleSelectControlScheme('alternative')}
-                  className={`py-2 px-2.5 rounded-lg border text-xs font-bold transition-colors cursor-pointer ${
-                    controlScheme === 'alternative'
-                      ? 'bg-[#132a1f] border-[#22c55e] text-[#bbf7d0]'
-                      : 'bg-[#12101b] border-[#2a233d] text-[#94a3b8] hover:text-white'
-                  }`}
-                >
-                  ⚡ Альтернативное (Легче)
+                  🪄 Классическое (Доп.)
                 </button>
               </div>
               <div className="text-[11px] leading-snug text-[#a39bb5]">
@@ -4573,7 +5082,7 @@ export default function App() {
                   Прогресс привязан к имени/коду персонажа и сохраняется автоматически в вашем браузере.
                 </div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
                   onClick={handleManualSaveCharacter}
@@ -4581,21 +5090,29 @@ export default function App() {
                 >
                   💾 Сохранить прокачку
                 </button>
+                <button
+                  type="button"
+                  data-testid="export-char-code-btn"
+                  onClick={handleExportCharacterCode}
+                  className="px-3 py-2 rounded-lg bg-[#1e293b] hover:bg-[#334155] border border-[#38bdf8] text-xs font-bold text-[#bae6fd] cursor-pointer"
+                >
+                  📋 Экспорт кода мага
+                </button>
               </div>
             </div>
 
-            {/* Create New Character Bar */}
+            {/* Create New Character & Import Bar */}
             <div className="p-4 rounded-xl bg-[#1b1729] border border-[#3b3154] space-y-3">
               <div className="text-xs font-bold uppercase tracking-wider text-[#fde047]">
-                ✨ Создать нового персонажа на аккаунте
+                ✨ Создать нового персонажа или импортировать код
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <input
                   type="text"
                   value={newCharNameInput}
                   onChange={(e) => setNewCharNameInput(e.target.value)}
-                  placeholder="Имя или код мага (например, Архимаг Вокс)..."
-                  maxLength={40}
+                  placeholder="Имя мага или вставьте код экспорта..."
+                  maxLength={16000}
                   data-testid="new-char-name-input"
                   className="flex-1 min-w-[200px] px-3 py-2 rounded-lg bg-[#0f0c18] border border-[#3b3154] text-xs text-white focus:outline-none focus:border-[#f59e0b]"
                 />
@@ -4614,6 +5131,14 @@ export default function App() {
                   className="px-3 py-2 rounded-lg bg-[#1e293b] hover:bg-[#334155] border border-[#38bdf8] text-[#bae6fd] text-xs font-bold cursor-pointer"
                 >
                   🔎 Найти по имени/коду
+                </button>
+                <button
+                  type="button"
+                  data-testid="import-char-code-btn"
+                  onClick={() => handleImportCharacterCode()}
+                  className="px-3 py-2 rounded-lg bg-[#251f38] hover:bg-[#332a4d] border border-[#a855f7] text-[#e9d5ff] text-xs font-bold cursor-pointer"
+                >
+                  📥 Импорт кода
                 </button>
               </div>
 

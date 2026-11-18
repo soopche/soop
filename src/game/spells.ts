@@ -213,6 +213,8 @@ export const SPELL_ORDER: SpellId[] = [
 ];
 
 export function getSpellHotkeyLabel(spellId: SpellId): string {
+  if (spellId === 'vera_verto') return 'Tab';
+  if (spellId === 'arcane_sword') return 'Caps';
   if (spellId === 'teleport') return 'Ё';
   if (spellId === 'campfire_teleport') return 'F';
   if (spellId === 'cooldown_reset') return 'G';
@@ -322,6 +324,7 @@ export type QuestEventType =
   | 'flawless_stage_clear'
   | 'stage0_kill_stationary'
   | 'stage0_kill_moving'
+  | 'stage0_combo_practice'
   | 'stage0_prep_complete'
   | 'stage0_clear';
 
@@ -360,7 +363,7 @@ export const CAMPFIRE_TELEPORT_DRAWN_MIN_CAST_SEC = 1.5;
 export const ENGORGIO_BUFF_DURATION_SEC = 10.0;
 export const GLACIUS_SLOW_PERCENT = 30; // 30% enemy movement/attack slow
 export const GLACIUS_SLOW_FACTOR = 0.7; // 1.0 - 0.30 = 0.70 speed multiplier
-export const GLACIUS_SLOW_DURATION_SEC = 2.0; // 2 seconds slow duration
+export const GLACIUS_SLOW_DURATION_SEC = 3.0; // 3 seconds slow duration
 
 // Campfire, Wooden Wall & Shelter Constants
 export const CAMPFIRE_WOOD_COST = 3; // 3 Дрова (ancient_wood) to build a campfire
@@ -1539,9 +1542,9 @@ export const SPELLS: Record<SpellId, SpellDef> = {
     name: 'Глациус (Мороз)',
     shortWord: 'Мороз',
     latinName: 'Glacius',
-    roleClue: 'Копье Мороза · Урон 4..26 · Замедление 30% на 2с · КД 4с→3с',
+    roleClue: 'Копье Мороза · Урон 4..26 · Замедление 30% на 3с · КД 4с→3с',
     description:
-      'Древнее заклинание ледяного дракона. Наносит 4..26 урона от рисунка и замедляет врагов на 30% на 2 секунды! С 4-го уровня выпускает 2 снаряда.',
+      'Древнее заклинание ледяного дракона. Наносит 4..26 урона от рисунка и замедляет врагов на 30% на 3 секунды! С 4-го уровня выпускает 2 снаряда.',
     voiceTriggers: ['мороз', 'лед', 'лёд', 'хлад', 'иней', 'глациус', 'гласиус', 'glacius'],
     gestureId: 'diamond',
     gestureName: 'Кристалл (◊)',
@@ -1730,10 +1733,23 @@ export const INITIAL_QUESTS: QuestDef[] = [
     rewardStat: '+10 Опыта (Обучение · только опыт)',
   },
   {
+    id: 'quest_stage0_combos',
+    category: 'combat',
+    title: 'Уровень 0: Мастер Комбинаций (Обучение)',
+    description: 'На 3-м этапе 0-го уровня выполните 4 стихийных комбо заклинаний по тренировочным целям.',
+    eventType: 'stage0_combo_practice',
+    targetCount: 4,
+    currentCount: 0,
+    completed: false,
+    claimed: false,
+    rewardXp: 14,
+    rewardStat: '+14 Опыта (Обучение · только опыт)',
+  },
+  {
     id: 'quest_stage0_prep',
     category: 'survival',
     title: 'Уровень 0: Привал и Крафт перед Боем',
-    description: 'Перед 3-й волной на 0-м уровне постройте костёр [C], возведите стену [B], сварите зелье здоровья и приготовьте еду у костра [I].',
+    description: 'Перед 4-й волной на 0-м уровне постройте костёр [C], возведите стену [B], сварите зелье здоровья и приготовьте еду у костра [I].',
     eventType: 'stage0_prep_complete',
     targetCount: 1,
     currentCount: 0,
@@ -1746,7 +1762,7 @@ export const INITIAL_QUESTS: QuestDef[] = [
     id: 'quest_stage0_clear',
     category: 'combat',
     title: 'Уровень 0: Боевое Крещение (Портал)',
-    description: 'Одолейте 4 атакующих врагов на 3-м этапе 0-го уровня и откройте портал на 1-й уровень Лабиринта.',
+    description: 'Одолейте 4 атакующих врагов на 4-м этапе 0-го уровня и откройте портал на 1-й уровень Лабиринта.',
     eventType: 'stage0_clear',
     targetCount: 4,
     currentCount: 0,
@@ -3333,11 +3349,11 @@ export const STAGE_0_ARCHETYPES: readonly Stage0MonsterArchetype[] = [
   'sky_dive_gargoyle',
 ] as const;
 
-export const STAGE_0_TOTAL_ENEMIES = 12;
+export const STAGE_0_TOTAL_ENEMIES = 16;
 
 export interface Stage0StepSpec {
-  stepIndex: number; // 0..11
-  phase: 1 | 2 | 3;
+  stepIndex: number; // 0..15
+  phase: 1 | 2 | 3 | 4;
   archetype: Stage0MonsterArchetype;
   behavior: Stage0TrainingBehavior;
   canMove: boolean;
@@ -3358,7 +3374,7 @@ export interface Stage0PrepState {
 }
 
 export const STAGE_0_PREP_BANNER =
-  '⛺ Подготовка к 3-й волне! Прежде чем выйдут атакующие враги: 1) Построй Костёр [C], 2) Возведи Стену [B], 3) У костра открой [I] → «Костёр и Стены» и нарисуй контур Зелья Здоровья и Жареной Крысы!';
+  '⛺ Подготовка к 4-й волне! Прежде чем выйдут атакующие враги: 1) Построй Костёр [C], 2) Возведи Стену [B], 3) У костра открой [I] → «Костёр и Стены» и нарисуй контур Зелья Здоровья и Жареной Крысы!';
 
 export function isStage0PrepComplete(
   prep: Pick<Stage0PrepState, 'campfireBuilt' | 'wallBuilt' | 'potionCrafted' | 'foodCooked'>
@@ -3367,33 +3383,41 @@ export function isStage0PrepComplete(
 }
 
 /**
- * Returns the exact specification for step `stepIndex` (0..11) on Stage 0 (Уровень 0):
+ * Returns the exact specification for step `stepIndex` (0..15) on Stage 0 (Уровень 0):
  * - Phase 1 (0..3): 4 Stage-1 monsters starting with Rat (`rat_swarmer`), completely stationary (`canMove: false, canAttack: false`).
- *   After the first 2 stationary monsters (`stepIndex === 2`), displays a banner suggesting casting by Voice [R] or Rune Drawing [ПКМ].
  * - Phase 2 (4..7): Same 4 monsters 1-by-1, moving toward the player (`canMove: true, canAttack: false`) + phase banner.
- * - Pre-Phase 3 Preparation Gate (`stepIndex === 8`, `requiresPrepBeforeSpawn: true`): Wave 3 does NOT spawn until the player builds a Campfire [C], builds a Wall [B], brews a Health Potion, and cooks Food at the campfire [I]!
- * - Phase 3 (8..11): Same 4 monsters 1-by-1, moving AND attacking (`canMove: true, canAttack: true`) + phase banner.
+ * - Phase 3 (8..11): 4 Combo Training targets (`move_only`, non-attacking) guiding the 4 elemental spell combos.
+ * - Pre-Phase 4 Preparation Gate (`stepIndex === 12`, `requiresPrepBeforeSpawn: true`): Wave 4 does NOT spawn until the player builds a Campfire [C], builds a Wall [B], brews a Health Potion, and cooks Food at the campfire [I]!
+ * - Phase 4 (12..15): Same 4 monsters 1-by-1, moving AND attacking (`canMove: true, canAttack: true`) + phase banner.
  */
 export function getStage0StepSpec(stepIndex: number): Stage0StepSpec | null {
   if (stepIndex < 0 || stepIndex >= STAGE_0_TOTAL_ENEMIES) return null;
-  const phaseIndex = Math.floor(stepIndex / 4); // 0, 1, 2
+  const phaseIndex = Math.floor(stepIndex / 4); // 0, 1, 2, 3
   const monsterIndex = stepIndex % 4;
-  const phase = (phaseIndex + 1) as 1 | 2 | 3;
+  const phase = (phaseIndex + 1) as 1 | 2 | 3 | 4;
   const archetype = STAGE_0_ARCHETYPES[monsterIndex];
   const behavior: Stage0TrainingBehavior =
-    phase === 1 ? 'stationary' : phase === 2 ? 'move_only' : 'combat';
+    phase === 1 ? 'stationary' : phase === 2 || phase === 3 ? 'move_only' : 'combat';
   const canMove = phase >= 2;
-  const canAttack = phase === 3;
-  const requiresPrepBeforeSpawn = stepIndex === 8;
+  const canAttack = phase === 4;
+  const requiresPrepBeforeSpawn = stepIndex === 12;
   const phaseBanner =
     stepIndex === 0
-      ? '🎯 Уровень 0 · Этап 1/3: Неподвижные мишени! Враги стоят на месте — спокойно испытай заклинания на 4 монстрах по очереди!'
+      ? '🎯 Уровень 0 · Этап 1/4: Неподвижные мишени! Враги стоят на месте — спокойно испытай заклинания на 4 монстрах по очереди!'
       : stepIndex === 2
       ? '🎙️ Совет Арканума: Попробуй убить следующих врагов ГОЛОСОМ — зажми [R] и произнеси заклинание вслух (или нарисуй руну [ПКМ])!'
       : stepIndex === 4
-      ? '🏃 Уровень 0 · Этап 2/3: Живые мишени! Попробуй попади по врагам в движении — не спеши, они ещё не атакуют!'
+      ? '🏃 Уровень 0 · Этап 2/4: Живые мишени! Попробуй попади по врагам в движении — не спеши, они ещё не атакуют!'
       : stepIndex === 8
-      ? '⚔️ Уровень 0 · Этап 3/3: Настоящий бой! Теперь враги могут бить тебя — укрывайся за стеной, уворачивайся и атакуй!'
+      ? '🔥❄️ Уровень 0 · Этап 3/4 (Комбо 1/4 «Термовзрыв»): Заморозь врага [2] Мороз (на 3с) и сразу ударь [1] Огонь!'
+      : stepIndex === 9
+      ? '🪶⚡ Комбо 2/4 «Воздушный Удар»: Подними врага в воздух [5] Левиоса и мощно оттолкни лучом [3] Удар!'
+      : stepIndex === 10
+      ? '🧱🔥 Комбо 3/4 «Пиро-Шок»: Оглуши врага [4] Стоп и взорви заклинанием [1] Огонь!'
+      : stepIndex === 11
+      ? '🧱⚡ Комбо 4/4 «Грозовой Таран»: Оглуши врага [4] Стоп и пробей лучом [3] Удар!'
+      : stepIndex === 12
+      ? '⚔️ Уровень 0 · Этап 4/4: Настоящий бой! Теперь враги могут бить тебя — укрывайся за стеной, уворачивайся и атакуй!'
       : null;
 
   return {
@@ -5968,8 +5992,20 @@ export function canAffordSpellUpgrade(
 ): boolean {
   if (currentLevel >= MAX_SPELL_LEVEL) return false;
   const cost = getSpellUpgradeCost(currentLevel, spellLevels, targetSpellId);
-  const total = getTotalReagentCount(inventory);
-  if (total < cost.totalResources) return false;
+  let spendableTotal = getTotalReagentCount(inventory);
+  if (currentLevel < 5) {
+    spendableTotal -=
+      (inventory.fire_essence || 0) +
+      (inventory.water_essence || 0) +
+      (inventory.earth_essence || 0);
+  }
+  if (currentLevel < 3) {
+    spendableTotal -=
+      (inventory.boar_tusk || 0) +
+      (inventory.dark_core_shard || 0) +
+      (inventory.ice_dragon_scale || 0);
+  }
+  if (spendableTotal < cost.totalResources) return false;
 
   if (cost.minFlyingReagents > 0) {
     const flyingCount = (inventory.gargoyle_heart || 0) + (inventory.harpy_feather || 0);
@@ -6052,14 +6088,12 @@ export function consumeSpellUpgradeCost(
     'mandrake_root',
     'ancient_wood',
     'rat_hair',
-    'boar_tusk',
-    'gargoyle_heart',
-    'harpy_feather',
-    'dark_core_shard',
-    'ice_dragon_scale',
-    'fire_essence',
-    'water_essence',
-    'earth_essence',
+    ...(currentLevel >= 3
+      ? (['boar_tusk', 'gargoyle_heart', 'harpy_feather', 'dark_core_shard', 'ice_dragon_scale'] as ReagentId[])
+      : (['gargoyle_heart', 'harpy_feather'] as ReagentId[])),
+    ...(currentLevel >= 5
+      ? (['fire_essence', 'water_essence', 'earth_essence'] as ReagentId[])
+      : []),
   ];
 
   for (const rId of spendOrder) {
@@ -6821,7 +6855,7 @@ export function calculateElementalAllyStats(
     ELEMENTAL_ALLY_MIN_DURATION_SEC +
       ratio * (ELEMENTAL_ALLY_MAX_DURATION_SEC - ELEMENTAL_ALLY_MIN_DURATION_SEC)
   );
-  const levelMult = 1 + (Math.max(1, Math.min(5, spellLevel)) - 1) * 0.15;
+  const levelMult = 1 + (Math.max(1, Math.min(MAX_SPELL_LEVEL, spellLevel)) - 1) * 0.15;
   const baseDmg = kind === 'snowman' ? 12 : 6;
   const maxBonusDmg = kind === 'snowman' ? 10 : 6;
   const attackDamage = Math.round((baseDmg + ratio * maxBonusDmg) * levelMult);
@@ -7076,8 +7110,14 @@ export interface Stage5EntitySpawnSpec {
 export function getStage5SpawnSpecs(): Stage5EntitySpawnSpec {
   return {
     trees: [
+      { x: -84, z: 212 },
+      { x: -68, z: 196 },
       { x: -62, z: 210 },
+      { x: -46, z: 208 },
+      { x: 8, z: 206 },
       { x: 80, z: 162 },
+      { x: 66, z: 142 },
+      { x: -34, z: 82 },
       { x: 64, z: 68 },
       { x: 42, z: -124 },
     ],
@@ -7427,7 +7467,7 @@ export function evaluateEnemyBaseMaxHp(
 
   const stageHpMult =
     stage === 0
-      ? 0.55
+      ? 0.85
       : isLabyrinth && (stage >= 4 || difficulty >= 2) && !isStage5WormBossArchetype(arch)
       ? 1.25
       : 1.0;
@@ -7471,6 +7511,9 @@ export interface CharacterProfileData {
   equippedArtifacts: Partial<Record<ArtifactSlot, ArtifactId>>;
   spellLevels: Record<SpellId, number>;
   reagentInventory: Record<ReagentId, number>;
+  craftedPotions: CraftedPotionItem[];
+  cookedFoods: Array<CookedRatFoodItem | CookedBoarFoodItem | CookedBearFoodItem>;
+  cookedBatFoods: CookedBatFoodItem[];
   tamedPetSpecies: TameableSpeciesId | 'none';
   tamedPetLevel: number;
   tamedPetTrainingStep: number;
@@ -7535,6 +7578,9 @@ export function createDefaultCharacterProfile(
       water_essence: 0,
       earth_essence: 0,
     },
+    craftedPotions: [],
+    cookedFoods: [],
+    cookedBatFoods: [],
     tamedPetSpecies: 'none',
     tamedPetLevel: 1,
     tamedPetTrainingStep: 0,
@@ -7864,3 +7910,248 @@ export function cycleSpellByWheel(currentSpellId: SpellId, deltaY: number): Spel
   return SPELL_ORDER[nextIdx];
 }
 
+export type SpellComboId = 'thermal_blast' | 'air_strike' | 'pyro_shock' | 'storm_ram';
+
+export interface SpellComboDef {
+  id: SpellComboId;
+  name: string;
+  setupSpellId: SpellId;
+  finisherSpellId: SpellId;
+  damageMultiplier: number;
+  burnSec: number;
+  addStunSec: number;
+  knockbackMultiplier: number;
+  badgeColor: string;
+  shortEffect: string;
+  description: string;
+}
+
+export const SPELL_COMBOS: readonly SpellComboDef[] = [
+  {
+    id: 'thermal_blast',
+    name: 'Термовзрыв',
+    setupSpellId: 'glacius',
+    finisherSpellId: 'incendio',
+    damageMultiplier: 1.5,
+    burnSec: 3.0,
+    addStunSec: 0,
+    knockbackMultiplier: 1.0,
+    badgeColor: '#f97316',
+    shortEffect: '×1.5 урон + горение 3с',
+    description: 'Заморозь [2] Мороз (3с) и сразу ударь [1] Огонь — термический взрыв ×1.5 урона и поджог на 3с!',
+  },
+  {
+    id: 'air_strike',
+    name: 'Воздушный Удар',
+    setupSpellId: 'wingardium',
+    finisherSpellId: 'expelliarmus',
+    damageMultiplier: 1.6,
+    burnSec: 0,
+    addStunSec: 0,
+    knockbackMultiplier: 2.4,
+    badgeColor: '#38bdf8',
+    shortEffect: '×1.6 урон + мощный отброс',
+    description: 'Подними врага в воздух [5] Левиоса (3с) и ударь лучом [3] Удар (или Мечом) — ×1.6 урона и полёт далеко назад!',
+  },
+  {
+    id: 'pyro_shock',
+    name: 'Пиро-Шок',
+    setupSpellId: 'stupefy',
+    finisherSpellId: 'incendio',
+    damageMultiplier: 1.5,
+    burnSec: 0,
+    addStunSec: 1.0,
+    knockbackMultiplier: 1.0,
+    badgeColor: '#fde047',
+    shortEffect: '×1.5 урон +1с оглушение',
+    description: 'Оглуши врага [4] Стоп и взорви [1] Огонь — ×1.5 урона и продление оглушения на +1с!',
+  },
+  {
+    id: 'storm_ram',
+    name: 'Грозовой Таран',
+    setupSpellId: 'stupefy',
+    finisherSpellId: 'expelliarmus',
+    damageMultiplier: 1.55,
+    burnSec: 0,
+    addStunSec: 0,
+    knockbackMultiplier: 1.0,
+    badgeColor: '#c084fc',
+    shortEffect: '×1.55 урон по оглушённому',
+    description: 'Оглуши врага [4] Стоп и пробей лучом [3] Удар — ×1.55 урона!',
+  },
+] as const;
+
+export type ElementalComboType = SpellComboId;
+
+/**
+ * Pure helper for the 4 Spell Combinations inside damageEnemy():
+ * 1) `thermal_blast`: Freeze (`freezeTimer > 0`) + `'incendio'` -> 1.5x damage, +3s burn, consumes freezeTimer.
+ * 2) `air_strike`: Levitate (`levitateTimer > 0`) + (`'expelliarmus'` or `'arcane_sword'`) -> 1.6x damage, 2.4x knockback, consumes levitateTimer.
+ * 3) `pyro_shock`: Stun (`stunTimer > 0`) + `'incendio'` -> 1.5x damage, +1.0s stunTimer.
+ * 4) `storm_ram`: Stun (`stunTimer > 0`) + `'expelliarmus'` -> 1.55x damage, consumes stunTimer.
+ */
+export function applyElementalSpellCombo(params: {
+  spellId: string;
+  baseDamage: number;
+  freezeTimer: number;
+  stunTimer: number;
+  levitateTimer?: number;
+  fromRemote?: boolean;
+  isPetAttack?: boolean;
+  isDirectPlayerHit?: boolean;
+}): {
+  damage: number;
+  comboType: ElementalComboType | null;
+  consumeFreeze: boolean;
+  consumeLevitate: boolean;
+  consumeStun: boolean;
+  burnSec: number;
+  addStunSec: number;
+  knockbackMultiplier: number;
+} {
+  if (params.fromRemote || params.isPetAttack || params.isDirectPlayerHit === false) {
+    return {
+      damage: params.baseDamage,
+      comboType: null,
+      consumeFreeze: false,
+      consumeLevitate: false,
+      consumeStun: false,
+      burnSec: 0,
+      addStunSec: 0,
+      knockbackMultiplier: 1.0,
+    };
+  }
+
+  if (params.freezeTimer > 0 && params.spellId === 'incendio') {
+    return {
+      damage: Math.max(1, Math.round(params.baseDamage * 1.5)),
+      comboType: 'thermal_blast',
+      consumeFreeze: true,
+      consumeLevitate: false,
+      consumeStun: false,
+      burnSec: 3.0,
+      addStunSec: 0,
+      knockbackMultiplier: 1.0,
+    };
+  }
+
+  if (
+    (params.levitateTimer ?? 0) > 0 &&
+    (params.spellId === 'expelliarmus' || params.spellId === 'arcane_sword')
+  ) {
+    return {
+      damage: Math.max(1, Math.round(params.baseDamage * 1.6)),
+      comboType: 'air_strike',
+      consumeFreeze: false,
+      consumeLevitate: true,
+      consumeStun: false,
+      burnSec: 0,
+      addStunSec: 0,
+      knockbackMultiplier: 2.4,
+    };
+  }
+
+  if (params.stunTimer > 0 && params.spellId === 'incendio') {
+    return {
+      damage: Math.max(1, Math.round(params.baseDamage * 1.5)),
+      comboType: 'pyro_shock',
+      consumeFreeze: false,
+      consumeLevitate: false,
+      consumeStun: false,
+      burnSec: 0,
+      addStunSec: 1.0,
+      knockbackMultiplier: 1.0,
+    };
+  }
+
+  if (params.stunTimer > 0 && params.spellId === 'expelliarmus') {
+    return {
+      damage: Math.max(1, Math.round(params.baseDamage * 1.55)),
+      comboType: 'storm_ram',
+      consumeFreeze: false,
+      consumeLevitate: false,
+      consumeStun: true,
+      burnSec: 0,
+      addStunSec: 0,
+      knockbackMultiplier: 1.0,
+    };
+  }
+
+  return {
+    damage: params.baseDamage,
+    comboType: null,
+    consumeFreeze: false,
+    consumeLevitate: false,
+    consumeStun: false,
+    burnSec: 0,
+    addStunSec: 0,
+    knockbackMultiplier: 1.0,
+  };
+}
+
+/**
+ * Pure helper to pick the closest target directly under the player's reticle ray.
+ */
+export function findAimedTargetOnRay<T extends { id: string; x: number; y: number; z: number }>(
+  origin: { x: number; y: number; z: number },
+  dir: { x: number; y: number; z: number },
+  candidates: readonly T[],
+  maxRange = 18,
+  hitRadius = 1.45
+): T | null {
+  const dirLen = Math.hypot(dir.x, dir.y, dir.z);
+  if (dirLen < 1e-6) return null;
+  const dx = dir.x / dirLen;
+  const dy = dir.y / dirLen;
+  const dz = dir.z / dirLen;
+
+  let best: T | null = null;
+  let bestT = maxRange;
+
+  for (const cand of candidates) {
+    const vx = cand.x - origin.x;
+    const vy = cand.y + 1.0 - origin.y; // Target torso height (+1.0m)
+    const vz = cand.z - origin.z;
+    const t = vx * dx + vy * dy + vz * dz;
+    if (t <= 0.3 || t > bestT) continue;
+
+    const cx = origin.x + dx * t - cand.x;
+    const cy = origin.y + dy * t - (cand.y + 1.0);
+    const cz = origin.z + dz * t - cand.z;
+    const perpDistSq = cx * cx + cy * cy + cz * cz;
+    if (perpDistSq <= hitRadius * hitRadius) {
+      best = cand;
+      bestT = t;
+    }
+  }
+
+  return best;
+}
+
+export const RADAR_CANVAS_SIZE = 120;
+export const RADAR_WORLD_RADIUS_M = 40;
+export const RADAR_PX_PER_METER = RADAR_CANVAS_SIZE / 2 / RADAR_WORLD_RADIUS_M; // 1.5 px/m
+
+/**
+ * Projects a world (x, z) point onto the 120x120 top-down radar centered on (playerX, playerZ).
+ */
+export function projectRadarPoint(
+  worldX: number,
+  worldZ: number,
+  playerX: number,
+  playerZ: number,
+  size = RADAR_CANVAS_SIZE,
+  worldRadius = RADAR_WORLD_RADIUS_M
+): { cx: number; cy: number; distMeters: number; inRange: boolean } {
+  const half = size / 2;
+  const scale = half / worldRadius;
+  const dx = worldX - playerX;
+  const dz = worldZ - playerZ;
+  const distMeters = Math.hypot(dx, dz);
+  return {
+    cx: half + dx * scale,
+    cy: half + dz * scale,
+    distMeters,
+    inRange: distMeters <= worldRadius,
+  };
+}

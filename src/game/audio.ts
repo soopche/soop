@@ -23,6 +23,66 @@ const SPELL_SOUND_URLS: Record<SpellId, string> = {
     '/assets/aistudio/freesound_community-vibratetimeeffect4-37261__mp3cut.net__f1156262.mp3',
 };
 
+export const AUDIO_PREFS_STORAGE_KEY = 'vox_arcanum_audio_prefs_v1';
+
+export interface AudioPrefs {
+  muted: boolean;
+  masterVolume: number; // 0..1
+}
+
+export function loadAudioPrefs(
+  storage?: Pick<Storage, 'getItem'> | null
+): AudioPrefs {
+  const defaults: AudioPrefs = { muted: false, masterVolume: 0.85 };
+  const targetStorage =
+    storage !== undefined
+      ? storage
+      : typeof window !== 'undefined'
+      ? window.localStorage
+      : null;
+  if (!targetStorage) return defaults;
+
+  try {
+    const raw = targetStorage.getItem(AUDIO_PREFS_STORAGE_KEY);
+    if (!raw) return defaults;
+    const parsed = JSON.parse(raw) as Partial<AudioPrefs> | null;
+    if (!parsed || typeof parsed !== 'object') return defaults;
+    const muted = typeof parsed.muted === 'boolean' ? parsed.muted : defaults.muted;
+    const vol =
+      typeof parsed.masterVolume === 'number' && Number.isFinite(parsed.masterVolume)
+        ? Math.max(0, Math.min(1, parsed.masterVolume))
+        : defaults.masterVolume;
+    return { muted, masterVolume: vol };
+  } catch {
+    return defaults;
+  }
+}
+
+export function saveAudioPrefs(
+  prefs: AudioPrefs,
+  storage?: Pick<Storage, 'setItem'> | null
+): void {
+  const targetStorage =
+    storage !== undefined
+      ? storage
+      : typeof window !== 'undefined'
+      ? window.localStorage
+      : null;
+  if (!targetStorage) return;
+
+  try {
+    const safePrefs: AudioPrefs = {
+      muted: Boolean(prefs.muted),
+      masterVolume: Number.isFinite(prefs.masterVolume)
+        ? Math.max(0, Math.min(1, Number(prefs.masterVolume.toFixed(3))))
+        : 0.85,
+    };
+    targetStorage.setItem(AUDIO_PREFS_STORAGE_KEY, JSON.stringify(safePrefs));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
 interface DecodedSpellSound {
   buffer: AudioBuffer;
   trimStartSec: number;
@@ -42,6 +102,10 @@ class ArcaneAudioEngine {
   public masterVolume = 0.85;
 
   constructor() {
+    const savedPrefs = loadAudioPrefs();
+    this.muted = savedPrefs.muted;
+    this.masterVolume = savedPrefs.masterVolume;
+
     if (typeof window !== 'undefined' && typeof fetch !== 'undefined') {
       // Pre-fetch all spell MP3s into memory immediately on load so there is zero network latency
       (Object.keys(SPELL_SOUND_URLS) as SpellId[]).forEach((spellId) => {
@@ -126,6 +190,7 @@ class ArcaneAudioEngine {
           trimStartSec: this.computeLeadingSilenceOffset(audioBuffer),
         };
         this.decodedSpellBuffers[spellId] = entry;
+        delete this.rawSpellData[spellId];
         return entry;
       })
       .catch(() => null);
@@ -152,6 +217,7 @@ class ArcaneAudioEngine {
           trimStartSec: this.computeLeadingSilenceOffset(audioBuffer),
         };
         this.decodedSwordExpiringBuffer = entry;
+        this.rawSwordExpiringData = null;
         return entry;
       })
       .catch(() => null);
@@ -194,6 +260,7 @@ class ArcaneAudioEngine {
 
   public setMuted(mute: boolean) {
     this.muted = mute;
+    saveAudioPrefs({ muted: this.muted, masterVolume: this.masterVolume });
     if (this.ctx && this.masterGain) {
       this.masterGain.gain.setValueAtTime(
         mute ? 0 : this.masterVolume,
@@ -209,6 +276,7 @@ class ArcaneAudioEngine {
 
   public setMasterVolume(vol: number) {
     this.masterVolume = Math.max(0, Math.min(1, vol));
+    saveAudioPrefs({ muted: this.muted, masterVolume: this.masterVolume });
     if (this.ctx && this.masterGain) {
       this.masterGain.gain.setValueAtTime(
         this.muted ? 0 : this.masterVolume,
@@ -569,35 +637,43 @@ export class VoiceSpellRecognizer {
     this.hasDispatchedThisSession = false;
 
     try {
-      this.recognition = new SpeechRec();
-      this.recognition.lang = 'ru-RU';
+      const rec = new SpeechRec();
+      this.recognition = rec;
+      rec.lang = 'ru-RU';
       // Push-To-Talk: single utterance mode so mic turns off after speaking
-      this.recognition.continuous = false;
-      this.recognition.interimResults = true;
-      this.recognition.maxAlternatives = 3;
+      rec.continuous = false;
+      rec.interimResults = true;
+      rec.maxAlternatives = 3;
 
-      this.recognition.onstart = () => {
+      rec.onstart = () => {
+        if (this.recognition !== rec) return;
         this.isListening = true;
         this.callbacks.onStatusChange(true, true);
       };
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      this.recognition.onresult = (event: any) => {
+      rec.onresult = (event: any) => {
+        if (this.recognition !== rec) return;
         if (this.hasDispatchedThisSession) return;
         let latestTranscript = '';
         for (let i = event.resultIndex; i < event.results.length; i++) {
-          const transcript = event.results[i][0].transcript;
-          latestTranscript += transcript + ' ';
-          const matched = matchVoiceSpell(transcript);
-          if (matched.spellId) {
-            this.hasDispatchedThisSession = true;
-            this.callbacks.onSpellRecognized(
-              matched.spellId,
-              transcript.trim(),
-              matched.voiceQuality
-            );
-            this.stop();
-            return;
+          const result = event.results[i];
+          if (!result || !result.length) continue;
+          latestTranscript += String(result[0]?.transcript || '') + ' ';
+          for (let alt = 0; alt < result.length; alt++) {
+            const transcript = String(result[alt]?.transcript || '');
+            if (!transcript) continue;
+            const matched = matchVoiceSpell(transcript);
+            if (matched.spellId) {
+              this.hasDispatchedThisSession = true;
+              this.callbacks.onSpellRecognized(
+                matched.spellId,
+                transcript.trim(),
+                matched.voiceQuality
+              );
+              this.stop();
+              return;
+            }
           }
         }
         if (latestTranscript.trim()) {
@@ -606,7 +682,8 @@ export class VoiceSpellRecognizer {
       };
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      this.recognition.onerror = (event: any) => {
+      rec.onerror = (event: any) => {
+        if (this.recognition !== rec) return;
         const errCode = String(event?.error || '');
         this.isListening = false;
         if (errCode === 'not-allowed' || errCode === 'service-not-allowed') {
@@ -620,12 +697,13 @@ export class VoiceSpellRecognizer {
         }
       };
 
-      this.recognition.onend = () => {
+      rec.onend = () => {
+        if (this.recognition !== rec) return;
         this.isListening = false;
         this.callbacks.onStatusChange(false, true);
       };
 
-      this.recognition.start();
+      rec.start();
     } catch {
       this.isListening = false;
       this.callbacks.onStatusChange(false, true, 'Не удалось включить микрофон');

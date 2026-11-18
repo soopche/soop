@@ -21,6 +21,7 @@ import {
   calculateCookedBoarFoodStats,
   calculateCookedRatFoodStats,
   calculateCraftedPotionStats,
+  calculateSpellCastStats,
   evaluateCampfireCraftDrawing,
   EquipmentId,
   EQUIPMENT_CATALOG,
@@ -58,6 +59,8 @@ import {
   getArtifactSalvageRefund,
   getCombinedArtifactBonuses,
   calculatePracticeGestureXp,
+  SPELL_COMBOS,
+  SpellComboId,
 } from '../game/spells';
 import { HudSnapshot, RemotePlayerState } from '../game/world3d';
 
@@ -337,7 +340,7 @@ interface GrimoireModalProps {
   onSalvageArtifact: (id: ArtifactId) => void;
   quests: QuestDef[];
   onClaimQuest: (questId: string) => void;
-  onPracticeGestureComplete: (accuracy: number, isComplete: boolean) => void;
+  onPracticeGestureComplete: (accuracy: number, isComplete: boolean, xpMultiplier?: number) => void;
   tamedPet: HudSnapshot['tamedPet'];
   onSelectTamedPet: (species: TameableSpeciesId) => void;
   onUpgradeTamedPet: () => void;
@@ -438,12 +441,35 @@ export const GrimoireModal: React.FC<GrimoireModalProps> = ({
   const trainCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const isDrawingRef = useRef(false);
   const strokeRef = useRef<Point2D[]>([]);
+  const [trainingMode, setTrainingMode] = useState<'single' | 'combo'>('single');
+  const [selectedComboId, setSelectedComboId] = useState<SpellComboId>(SPELL_COMBOS[0].id);
+  const [comboStep, setComboStep] = useState<1 | 2>(1);
+  const [step1Accuracy, setStep1Accuracy] = useState<number | null>(null);
+  const [step1Damage, setStep1Damage] = useState<number>(0);
+  const [comboHotkeyHint, setComboHotkeyHint] = useState<string | null>(null);
+  const [comboResult, setComboResult] = useState<{
+    comboName: string;
+    step1Acc: number;
+    step2Acc: number;
+    avgAcc: number;
+    step1Damage: number;
+    finisherDamage: number;
+    totalDamage: number;
+    xpEarned: number;
+  } | null>(null);
   const [trainResult, setTrainResult] = useState<{
     accuracy: number;
     completionRatio: number;
     isComplete: boolean;
     estimatedDamage: number;
+    summaryText: string;
   } | null>(null);
+
+  const activeCombo =
+    SPELL_COMBOS.find((c) => c.id === selectedComboId) || SPELL_COMBOS[0];
+  const expectedComboSpellId =
+    comboStep === 1 ? activeCombo.setupSpellId : activeCombo.finisherSpellId;
+  const isComboHotkeyReady = selectedSpellId === expectedComboSpellId;
 
   const activeSpell = SPELLS[selectedSpellId];
   const activeSpellLevel = spellLevels[selectedSpellId] || 1;
@@ -487,10 +513,15 @@ export const GrimoireModal: React.FC<GrimoireModalProps> = ({
     ctx.arc(w / 2, h / 2, w * 0.38, 0, Math.PI * 2);
     ctx.stroke();
 
-    const tpl = activeSpell.templatePoints;
+    const spellForCanvas =
+      trainingMode === 'combo' ? SPELLS[expectedComboSpellId] : activeSpell;
+    const tpl = spellForCanvas.templatePoints;
+    const hotkeyMatched = trainingMode !== 'combo' || isComboHotkeyReady;
     if (tpl.length > 1) {
       ctx.save();
-      ctx.strokeStyle = 'rgba(245, 158, 11, 0.42)';
+      ctx.strokeStyle = hotkeyMatched
+        ? 'rgba(245, 158, 11, 0.48)'
+        : 'rgba(148, 163, 184, 0.22)';
       ctx.lineWidth = 6;
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
@@ -505,7 +536,7 @@ export const GrimoireModal: React.FC<GrimoireModalProps> = ({
       ctx.stroke();
 
       const startPt = tpl[0];
-      ctx.fillStyle = '#f59e0b';
+      ctx.fillStyle = hotkeyMatched ? '#f59e0b' : '#64748b';
       ctx.beginPath();
       ctx.arc(startPt.x * w, startPt.y * h, 7, 0, Math.PI * 2);
       ctx.fill();
@@ -514,7 +545,7 @@ export const GrimoireModal: React.FC<GrimoireModalProps> = ({
 
     if (userPoints.length > 1) {
       ctx.save();
-      ctx.strokeStyle = activeSpell.color;
+      ctx.strokeStyle = spellForCanvas.color;
       ctx.lineWidth = 5;
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
@@ -531,14 +562,36 @@ export const GrimoireModal: React.FC<GrimoireModalProps> = ({
   useEffect(() => {
     if (activeTab === 'training') {
       strokeRef.current = [];
-      setTrainResult(null);
+      if (trainingMode === 'single') {
+        setTrainResult(null);
+      } else if (isComboHotkeyReady) {
+        setComboHotkeyHint(null);
+      }
       drawTrainingCanvas([]);
     }
-  }, [activeTab, selectedSpellId]);
+  }, [activeTab, selectedSpellId, trainingMode, selectedComboId, comboStep]);
+
+  const handleSelectComboTraining = (comboId: SpellComboId) => {
+    setSelectedComboId(comboId);
+    setComboStep(1);
+    setStep1Accuracy(null);
+    setStep1Damage(0);
+    setComboResult(null);
+    setComboHotkeyHint(null);
+    strokeRef.current = [];
+  };
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = trainCanvasRef.current;
     if (!canvas) return;
+    if (trainingMode === 'combo' && !isComboHotkeyReady) {
+      const hk = getSpellHotkeyLabel(expectedComboSpellId);
+      setComboHotkeyHint(
+        `Сначала нажмите клавишу [${hk}] ${SPELLS[expectedComboSpellId].shortWord}!`
+      );
+      return;
+    }
+    setComboHotkeyHint(null);
     const rect = canvas.getBoundingClientRect();
     isDrawingRef.current = true;
     strokeRef.current = [
@@ -567,6 +620,66 @@ export const GrimoireModal: React.FC<GrimoireModalProps> = ({
     isDrawingRef.current = false;
     if (strokeRef.current.length < 3) return;
 
+    if (trainingMode === 'combo') {
+      const targetSpellId =
+        comboStep === 1 ? activeCombo.setupSpellId : activeCombo.finisherSpellId;
+      const res = evaluateGestureAccuracy(
+        strokeRef.current,
+        targetSpellId,
+        0,
+        0,
+        280
+      );
+      const preview = calculateSpellCastStats({
+        spellId: targetSpellId,
+        castMode: 'drawn',
+        gestureAccuracy: res.accuracy,
+        voiceMatched: false,
+        playerLevel,
+        spellLevel: spellLevels[targetSpellId] || 1,
+        staffId: equippedStaffId,
+        equippedArtifacts,
+      });
+
+      if (comboStep === 1) {
+        setStep1Accuracy(res.accuracy);
+        setStep1Damage(preview.finalDamage);
+        setComboResult(null);
+        setComboStep(2);
+        setComboHotkeyHint(null);
+        strokeRef.current = [];
+        drawTrainingCanvas([]);
+        return;
+      }
+
+      const prevAcc = step1Accuracy ?? res.accuracy;
+      const avgAcc = Math.round((prevAcc + res.accuracy) / 2);
+      const boostedFinisherDamage = Math.max(
+        1,
+        Math.round(preview.finalDamage * activeCombo.damageMultiplier)
+      );
+      const totalDamage = step1Damage + boostedFinisherDamage;
+      const xpEarned = calculatePracticeGestureXp(avgAcc) * 2;
+      setComboResult({
+        comboName: activeCombo.name,
+        step1Acc: prevAcc,
+        step2Acc: res.accuracy,
+        avgAcc,
+        step1Damage,
+        finisherDamage: boostedFinisherDamage,
+        totalDamage,
+        xpEarned,
+      });
+      setComboStep(1);
+      setStep1Accuracy(null);
+      setStep1Damage(0);
+      setComboHotkeyHint(null);
+      strokeRef.current = [];
+      drawTrainingCanvas([]);
+      onPracticeGestureComplete(avgAcc, avgAcc >= 45, 2);
+      return;
+    }
+
     // Evaluate raw drawing accuracy strictly on the 280x280 training canvas (bonus = 0, forgiveness = 0)
     // so Gesture Training reflects true drawing precision instead of inflating every stroke to 100%!
     const res = evaluateGestureAccuracy(
@@ -576,14 +689,36 @@ export const GrimoireModal: React.FC<GrimoireModalProps> = ({
       0,
       280
     );
-    const drawnVal =
-      selectedSpellId === 'vera_verto'
-        ? Math.round((20 + (res.accuracy / 100) * 20) * activeSpellMult)
-        : selectedSpellId === 'stupefy'
-        ? Math.round((4 + ((res.accuracy - 10) / 90) * 16) * activeSpellMult)
-        : Math.round((6 + ((res.accuracy - 10) / 90) * 24) * activeSpellMult);
-    setTrainResult({ ...res, estimatedDamage: drawnVal });
-    onPracticeGestureComplete(res.accuracy, res.isComplete);
+    const preview = calculateSpellCastStats({
+      spellId: selectedSpellId,
+      castMode: 'drawn',
+      gestureAccuracy: res.accuracy,
+      voiceMatched: false,
+      playerLevel,
+      spellLevel: activeSpellLevel,
+      staffId: equippedStaffId,
+      equippedArtifacts,
+    });
+    let summaryText = `Урон: ${preview.finalDamage}`;
+    if (selectedSpellId === 'vera_verto') {
+      summaryText = `Лечение: +${preview.healAmount} ОЗ`;
+    } else if (selectedSpellId === 'engorgio') {
+      summaryText = `Рост питомца: x${preview.animalScaleMultiplier} · Урон x${preview.petDamageMultiplier} (${preview.petDurationSec}с)`;
+    } else if (selectedSpellId === 'arcane_sword') {
+      summaryText = `Меч: ${preview.finalDamage} ур./взмах · ${preview.swordDurationSec}с`;
+    } else if (selectedSpellId === 'teleport') {
+      summaryText = `Урон: ${preview.finalDamage} · Прыжок: ${preview.teleportRange}м · КД: ${preview.cooldownSec}с`;
+    } else if (selectedSpellId === 'campfire_teleport') {
+      summaryText = `Призыв к костру: ${preview.castDurationSec}с`;
+    } else if (selectedSpellId === 'cooldown_reset') {
+      summaryText = `Сброс КД: -${preview.cooldownReductionPercent}%`;
+    }
+    setTrainResult({
+      ...res,
+      estimatedDamage: preview.healAmount || preview.finalDamage,
+      summaryText,
+    });
+    onPracticeGestureComplete(res.accuracy, res.isComplete, 1);
   };
 
   const drawCampfireCraftCanvas = (userPoints: Point2D[]) => {
@@ -1024,11 +1159,21 @@ export const GrimoireModal: React.FC<GrimoireModalProps> = ({
                         </div>
                       ) : !canAffordSelectedRecipe() ? (
                         <div className="p-2.5 rounded-lg bg-[#271f10] border border-[#f59e0b] text-[#fde047] font-semibold">
-                          ⚠️ Недостаточно ингредиентов для рецепта ({selectedRecipe === 'rat_food' ? 'нужно 2 тушки крысы' : selectedRecipe === 'boar_food' ? 'нужно 2 мяса дикого кабана с 3–4 уровней' : selectedRecipe === 'bat_food' ? 'нужно 1 сырое мясо мыши + 1 вода 4 ур. (или 2 мыши)' : 'нужен 1 реагент'}).
+                          ⚠️ Недостаточно ингредиентов для рецепта ({selectedRecipe === 'rat_food' ? 'нужно 2 тушки крысы' : selectedRecipe === 'boar_food' ? 'нужно 2 мяса дикого кабана с 3–4 уровней' : selectedRecipe === 'bear_food' ? 'нужно 2 медвежатины с 5-го уровня' : selectedRecipe === 'bat_food' ? 'нужно 1 сырое мясо мыши + 1 вода 4 ур. (или 2 мыши)' : 'нужен 1 реагент'}).
                         </div>
                       ) : (
-                        <div className="p-2 rounded-lg bg-[#132a1f] border border-[#22c55e] text-[#bbf7d0]">
-                          ✓ Костёр горит! Нарисуйте узор на холсте для готовки.
+                        <div className="space-y-2">
+                          <div className="p-2 rounded-lg bg-[#132a1f] border border-[#22c55e] text-[#bbf7d0]">
+                            ✓ Костёр горит! Нарисуйте узор на холсте для готовки.
+                          </div>
+                          <button
+                            type="button"
+                            data-testid="campfire-quick-cook-btn"
+                            onClick={() => finalizeCampfireRecipeDraw(55)}
+                            className="w-full py-2 px-3 rounded-lg bg-[#d97706] hover:bg-[#f59e0b] text-[#09080d] font-bold text-xs shadow transition-colors cursor-pointer"
+                          >
+                            ⚡ Быстро приготовить (55%)
+                          </button>
                         </div>
                       )}
 
@@ -1549,7 +1694,7 @@ export const GrimoireModal: React.FC<GrimoireModalProps> = ({
                       </div>
                     </div>
                     <div className="p-2.5 rounded-lg bg-[#12101b] border border-[#38bdf8] text-xs font-mono-num text-[#bae6fd]">
-                      ❄️ Замедляет врагов на <strong>30% на 2 секунды</strong> · При наведении на воду замораживает участок в Снег.
+                      ❄️ Замедляет врагов на <strong>30% на 3 секунды</strong> · При наведении на воду замораживает участок в Снег.
                     </div>
                   </div>
                 ) : activeSpell.id === 'stupefy' ? (
@@ -1826,60 +1971,218 @@ export const GrimoireModal: React.FC<GrimoireModalProps> = ({
 
           {/* TAB 3: GESTURE TRAINING */}
           {activeTab === 'training' && (
-            <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-center">
-              <div className="md:col-span-5 space-y-3">
-                <h3 className="font-display text-lg font-bold text-[#f5efe6]">
-                  Тренировка Жестов (Ур. {gestureMasteryLevel})
-                </h3>
-                <div className="flex flex-wrap gap-1.5">
-                  {SPELL_ORDER.map((spId) => {
-                    const sp = SPELLS[spId];
-                    return (
-                      <button
-                        key={sp.id}
-                        type="button"
-                        onClick={() => onSelectSpell(sp.id)}
-                        className={`px-3 py-1.5 text-xs font-semibold rounded cursor-pointer ${
-                          selectedSpellId === sp.id
-                            ? 'bg-[#f59e0b] text-[#09080d]'
-                            : 'bg-[#1f1b2e] text-[#e2d9f3] hover:bg-[#2d2742]'
-                        }`}
-                      >
-                        {sp.shortWord}
-                      </button>
-                    );
-                  })}
+            <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-start">
+              <div className="md:col-span-6 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="font-display text-lg font-bold text-[#f5efe6]">
+                    Тренировка Жестов (Ур. {gestureMasteryLevel})
+                  </h3>
+                  <div className="flex items-center gap-1.5 bg-[#0e0c16] p-1 rounded-lg border border-[#2a233d]">
+                    <button
+                      type="button"
+                      data-testid="training-mode-single"
+                      onClick={() => {
+                        setTrainingMode('single');
+                        setComboHotkeyHint(null);
+                      }}
+                      className={`px-2.5 py-1 text-xs font-semibold rounded cursor-pointer transition-colors ${
+                        trainingMode === 'single'
+                          ? 'bg-[#f59e0b] text-[#09080d]'
+                          : 'text-[#cbd5e1] hover:bg-[#1f1b2e]'
+                      }`}
+                    >
+                      Одиночный жест
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="training-mode-combo"
+                      onClick={() => {
+                        setTrainingMode('combo');
+                        setComboStep(1);
+                        setStep1Accuracy(null);
+                        setStep1Damage(0);
+                        setComboResult(null);
+                        setComboHotkeyHint(null);
+                      }}
+                      className={`px-2.5 py-1 text-xs font-semibold rounded cursor-pointer transition-colors ${
+                        trainingMode === 'combo'
+                          ? 'bg-[#f59e0b] text-[#09080d]'
+                          : 'text-[#cbd5e1] hover:bg-[#1f1b2e]'
+                      }`}
+                    >
+                      ⚡ Комбинации (4 комбо)
+                    </button>
+                  </div>
                 </div>
 
-                <p className="text-xs text-[#cbd5e1] leading-relaxed">
-                  Обводите пунктирный контур заклинания на холсте справа. Чем точнее нарисован жест, тем больше опыта вы получаете (от <strong>+2 XP</strong> при 45% до <strong>+15 XP</strong> при 100% точности)!
-                </p>
+                {trainingMode === 'single' ? (
+                  <>
+                    <div className="flex flex-wrap gap-1.5">
+                      {SPELL_ORDER.map((spId) => {
+                        const sp = SPELLS[spId];
+                        return (
+                          <button
+                            key={sp.id}
+                            type="button"
+                            onClick={() => onSelectSpell(sp.id)}
+                            className={`px-3 py-1.5 text-xs font-semibold rounded cursor-pointer ${
+                              selectedSpellId === sp.id
+                                ? 'bg-[#f59e0b] text-[#09080d]'
+                                : 'bg-[#1f1b2e] text-[#e2d9f3] hover:bg-[#2d2742]'
+                            }`}
+                          >
+                            [{getSpellHotkeyLabel(sp.id)}] {sp.shortWord}
+                          </button>
+                        );
+                      })}
+                    </div>
 
-                {trainResult && (
-                  <div
-                    data-testid="gesture-training-result"
-                    className="p-3.5 rounded-lg bg-[#1c182b] border border-[#3b3154] text-sm font-bold text-[#fde047] font-mono-num space-y-1"
-                  >
-                    <div>
-                      Точность: {trainResult.accuracy}% ·{' '}
-                      {selectedSpellId === 'vera_verto'
-                        ? `+${trainResult.estimatedDamage} ОЗ`
-                        : `Урон: ${trainResult.estimatedDamage}`}
+                    <p className="text-xs text-[#cbd5e1] leading-relaxed">
+                      Обводите пунктирный контур заклинания на холсте справа (можно переключать клавишами). Чем точнее нарисован жест, тем больше опыта вы получаете (от <strong>+2 XP</strong> при 45% до <strong>+15 XP</strong> при 100% точности)!
+                    </p>
+
+                    {trainResult && (
+                      <div
+                        data-testid="gesture-training-result"
+                        className="p-3.5 rounded-lg bg-[#1c182b] border border-[#3b3154] text-sm font-bold text-[#fde047] font-mono-num space-y-1"
+                      >
+                        <div>
+                          Точность: {trainResult.accuracy}% · {trainResult.summaryText}
+                        </div>
+                        <div className="text-xs text-[#4ade80]">
+                          {calculatePracticeGestureXp(trainResult.accuracy) > 0
+                            ? `✨ Получено опыта за тренировку: +${calculatePracticeGestureXp(
+                                trainResult.accuracy
+                              )} XP`
+                            : '⚠️ Точность ниже 45% (0 XP) — проведите линию точнее по контуру!'}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {SPELL_COMBOS.map((combo) => {
+                        const setupHk = getSpellHotkeyLabel(combo.setupSpellId);
+                        const finHk = getSpellHotkeyLabel(combo.finisherSpellId);
+                        const isSelected = selectedComboId === combo.id;
+                        return (
+                          <button
+                            key={combo.id}
+                            type="button"
+                            data-testid={`training-combo-${combo.id}`}
+                            onClick={() => handleSelectComboTraining(combo.id)}
+                            className={`p-2.5 rounded-lg border text-left transition-colors cursor-pointer ${
+                              isSelected
+                                ? 'bg-[#231d36] border-[#f59e0b] text-white'
+                                : 'bg-[#161322] border-[#2a233d] text-[#cbd5e1] hover:border-[#4c3d75]'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-1 text-xs font-bold">
+                              <span style={{ color: combo.badgeColor }}>{combo.name}</span>
+                              <span className="font-mono-num text-[11px] text-[#fde047]">
+                                [{setupHk}]→[{finHk}]
+                              </span>
+                            </div>
+                            <div className="text-[11px] text-[#94a3b8] mt-0.5">
+                              {SPELLS[combo.setupSpellId].shortWord} → {SPELLS[combo.finisherSpellId].shortWord} · {combo.shortEffect}
+                            </div>
+                          </button>
+                        );
+                      })}
                     </div>
-                    <div className="text-xs text-[#4ade80]">
-                      {calculatePracticeGestureXp(trainResult.accuracy) > 0
-                        ? `✨ Получено опыта за тренировку: +${calculatePracticeGestureXp(
-                            trainResult.accuracy
-                          )} XP`
-                        : '⚠️ Точность ниже 45% (0 XP) — проведите линию точнее по контуру!'}
+
+                    <div
+                      data-testid="combo-training-step-prompt"
+                      className={`p-3 rounded-lg border space-y-1.5 ${
+                        isComboHotkeyReady
+                          ? 'bg-[#10261c] border-[#22c55e]'
+                          : 'bg-[#261b0e] border-[#f59e0b]'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2 text-xs font-bold font-mono-num">
+                        <span className={isComboHotkeyReady ? 'text-[#4ade80]' : 'text-[#fde047]'}>
+                          Шаг {comboStep}/2 · {activeCombo.name}
+                        </span>
+                        {step1Accuracy !== null && comboStep === 2 && (
+                          <span className="text-[#38bdf8]">
+                            Шаг 1: {step1Accuracy}%
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs text-[#f5efe6] leading-snug">
+                        {isComboHotkeyReady ? (
+                          <>
+                            ✓ Клавиша{' '}
+                            <strong className="text-[#4ade80]">
+                              [{getSpellHotkeyLabel(expectedComboSpellId)}]{' '}
+                              {SPELLS[expectedComboSpellId].shortWord}
+                            </strong>{' '}
+                            выбрана! Обведите контур{' '}
+                            <strong>{SPELLS[expectedComboSpellId].gestureName}</strong>.
+                          </>
+                        ) : (
+                          <>
+                            Нажмите клавишу{' '}
+                            <strong className="text-[#fde047]">
+                              [{getSpellHotkeyLabel(expectedComboSpellId)}]{' '}
+                              {SPELLS[expectedComboSpellId].shortWord}
+                            </strong>
+                            , затем нарисуйте руну{' '}
+                            <strong>{SPELLS[expectedComboSpellId].gestureName}</strong>.
+                          </>
+                        )}
+                      </div>
+                      {!isComboHotkeyReady && (
+                        <button
+                          type="button"
+                          data-testid="combo-select-expected-btn"
+                          onClick={() => onSelectSpell(expectedComboSpellId)}
+                          className="px-2.5 py-1 text-[11px] font-semibold rounded bg-[#f59e0b] text-[#09080d] hover:bg-[#fbbf24] cursor-pointer"
+                        >
+                          Выбрать [{getSpellHotkeyLabel(expectedComboSpellId)}]{' '}
+                          {SPELLS[expectedComboSpellId].shortWord}
+                        </button>
+                      )}
+                      {comboHotkeyHint && (
+                        <div className="text-[11px] font-bold text-[#fca5a5]">
+                          {comboHotkeyHint}
+                        </div>
+                      )}
                     </div>
+
+                    {comboResult && (
+                      <div
+                        data-testid="combo-training-result"
+                        className="p-3.5 rounded-lg bg-[#1c182b] border border-[#f59e0b] text-xs font-bold font-mono-num space-y-1"
+                      >
+                        <div className="text-sm text-[#fde047]">
+                          ⚡ {comboResult.comboName}: точность {comboResult.avgAcc}% (
+                          {comboResult.step1Acc}% + {comboResult.step2Acc}%)
+                        </div>
+                        <div className="text-[#38bdf8]">
+                          💥 Суммарный урон комбо: {comboResult.totalDamage} (
+                          {comboResult.step1Damage} + {comboResult.finisherDamage})
+                        </div>
+                        <div className="text-[#4ade80]">
+                          {comboResult.xpEarned > 0
+                            ? `✨ Двойной опыт за комбо: +${comboResult.xpEarned} XP (×2)`
+                            : '⚠️ Средняя точность ниже 45% (0 XP) — повторите комбо точнее!'}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
 
-              <div className="md:col-span-7 flex flex-col items-center">
+              <div className="md:col-span-6 flex flex-col items-center">
                 <div className="text-xs text-[#a39bb5] mb-2">
-                  Обведите контур: <strong className="text-white">{activeSpell.gestureName}</strong>
+                  Обведите контур:{' '}
+                  <strong className="text-white">
+                    {trainingMode === 'combo'
+                      ? `[${getSpellHotkeyLabel(expectedComboSpellId)}] ${SPELLS[expectedComboSpellId].shortWord} — ${SPELLS[expectedComboSpellId].gestureName}`
+                      : activeSpell.gestureName}
+                  </strong>
                 </div>
                 <canvas
                   ref={trainCanvasRef}
@@ -2132,10 +2435,10 @@ export const GrimoireModal: React.FC<GrimoireModalProps> = ({
                     slot === 'robe'
                       ? 'Защита от урона, шанс непрохождения урона (уклонение) и бонус к Макс. ОЗ'
                       : slot === 'gloves'
-                      ? 'Увеличение запаса маны (Макс. МП) и ускорение регенерации маны в секунду'
+                      ? 'Запас маны (Макс. МП), регенерация маны и урон заклинаний (+5..+15% с 3 ур.)'
                       : slot === 'ring'
-                      ? 'Усиление урона всех заклинаний и снижение времени перезарядки'
-                      : 'Повышение скорости передвижения мага и дальности прыжка Телепорта [Ё]';
+                      ? 'Снижение времени перезарядки и дальность прыжка Телепорта [Ё] (+2..+5м)'
+                      : 'Защита от урона и повышение скорости передвижения (+6..+22%)';
 
                   return (
                     <div

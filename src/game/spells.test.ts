@@ -63,6 +63,11 @@ import {
   segmentHitsWall,
   LABYRINTH_MULTIPLAYER_MODES,
   getDeterministicEnemyId,
+  applyElementalSpellCombo,
+  findAimedTargetOnRay,
+  projectRadarPoint,
+  RADAR_CANVAS_SIZE,
+  RADAR_PX_PER_METER,
   getLabyrinthRuneGates,
   getScaledEnemyStatsForMode,
   isStageBossDefeated,
@@ -198,7 +203,9 @@ test('SPELL_ORDER includes [1..8], [Ё] Teleport, [F] Домой, and [G] Пер
   assert.equal(SPELLS.campfire_teleport.manaCost, 10);
   assert.equal(SPELLS.campfire_teleport.cooldown, 120);
   assert.equal(getSpellHotkeyLabel('incendio'), '1');
-  assert.equal(getSpellHotkeyLabel('vera_verto'), '7');
+  assert.equal(getSpellHotkeyLabel('engorgio'), '6');
+  assert.equal(getSpellHotkeyLabel('vera_verto'), 'Tab');
+  assert.equal(getSpellHotkeyLabel('arcane_sword'), 'Caps');
   assert.equal(getSpellHotkeyLabel('teleport'), 'Ё');
   assert.equal(getSpellHotkeyLabel('campfire_teleport'), 'F');
   assert.equal(getSpellHotkeyLabel('cooldown_reset'), 'G');
@@ -434,10 +441,10 @@ test('calculateSpellCastStats enforces 4.0s->3.0s cooldowns, Teleport 10s CD/ran
   assert.equal(stupefyPoorDraw.rawBaseDamage, 4);
   assert.equal(stupefyPerfectDraw.rawBaseDamage, 20);
 
-  // 5b. Glacius ("Мороз"): 10 on voice, 4..26 drawn and 30% slow for 2s
+  // 5b. Glacius ("Мороз"): 10 on voice, 4..26 drawn and 30% slow for 3s
   assert.equal(GLACIUS_SLOW_PERCENT, 30);
   assert.equal(GLACIUS_SLOW_FACTOR, 0.7);
-  assert.equal(GLACIUS_SLOW_DURATION_SEC, 2.0);
+  assert.equal(GLACIUS_SLOW_DURATION_SEC, 3.0);
   const glaciusVoice = calculateSpellCastStats({
     spellId: 'glacius',
     castMode: 'voice',
@@ -780,8 +787,8 @@ test('Steeper upgrade and crafting costs require 8/16/24/32/42 for spells, 3-4 s
   }
 });
 
-test('46 categorized quests (including Stage 0 tutorial quests, Stage 3-5 elite quests, Bosses 1-5, Walls, and Flawless Run) require manual claimQuestReward', () => {
-  assert.equal(INITIAL_QUESTS.length, 46);
+test('47 categorized quests (including Stage 0 tutorial + combo quests, Stage 3-5 elite quests, Bosses 1-5, Walls, and Flawless Run) require manual claimQuestReward', () => {
+  assert.equal(INITIAL_QUESTS.length, 47);
   const categories = new Set(INITIAL_QUESTS.map((q) => q.category));
   assert.deepEqual(
     Array.from(categories).sort(),
@@ -1510,7 +1517,7 @@ test('Stage 5 Splitting Worm Boss (1 -> 2 -> 4 at <=30% HP), 4 New Stage 5 Mob A
   assert.ok(bearMax.bonusMaxHp > boarMax.bonusMaxHp);
   assert.ok(bearMax.hpRegenPerSec > boarMax.hpRegenPerSec);
 
-  assert.equal(getSpellHotkeyLabel('arcane_sword'), '8');
+  assert.equal(getSpellHotkeyLabel('arcane_sword'), 'Caps');
   assert.equal(ARCANE_SWORD_COOLDOWN_SEC, 60.0);
   assert.equal(ARCANE_SWORD_SWING_COOLDOWN_SEC, 1.0);
   assert.equal(getSpellCooldownForLevel('arcane_sword', 1), 60.0);
@@ -2025,7 +2032,7 @@ test('Alternative Control Scheme supports 30% cast on button press, unmodified v
   assert.equal(cycleSpellByWheel('cooldown_reset', -100), 'incendio');
 });
 
-test('Stage 0 (Уровень 0) provides compact training room, 12 sequential 1-by-1 enemies across 3 phases, voice hint after 2 enemies, mandatory pre-wave-3 preparation gate, and XP-only quests', () => {
+test('Stage 0 (Уровень 0) provides compact training room, 16 sequential 1-by-1 enemies across 4 phases (including Combo wave), voice hint after 2 enemies, mandatory pre-wave-4 preparation gate, and XP-only quests', () => {
   const layout0 = getLabyrinthStageLayout(0);
   assert.equal(layout0.stage, 0);
   assert.equal(layout0.halfWidth, 28);
@@ -2037,30 +2044,49 @@ test('Stage 0 (Уровень 0) provides compact training room, 12 sequential 1
 
   const seq = getStage0TrainingSequence();
   assert.equal(seq.length, STAGE_0_TOTAL_ENEMIES);
-  assert.equal(seq.length, 12);
+  assert.equal(seq.length, 16);
+
+  // Stage 0 enemy base HP scales down to 0.85x of Stage 1
+  assert.equal(
+    evaluateEnemyBaseMaxHp('rat_swarmer', 1, 0, 1),
+    Math.round(evaluateEnemyBaseMaxHp('rat_swarmer', 1, 1, 1) * 0.85)
+  );
 
   // Phase 1 (0..3): Stationary targets starting with Rat
+  assert.equal(seq[0].phase, 1);
   assert.equal(seq[0].archetype, 'rat_swarmer');
   assert.equal(seq[0].canMove, false);
   assert.equal(seq[0].canAttack, false);
-  assert.ok(seq[0].phaseBanner && seq[0].phaseBanner.includes('Этап 1/3'));
+  assert.ok(seq[0].phaseBanner && seq[0].phaseBanner.includes('Этап 1/4'));
 
   // After first 2 stationary enemies (stepIndex === 2): Voice & Drawn spell suggestion banner
   const step2 = getStage0StepSpec(2)!;
   assert.ok(step2.phaseBanner && step2.phaseBanner.includes('ГОЛОСОМ'));
 
   // Phase 2 (4..7): Moving targets that do not attack
+  assert.equal(seq[4].phase, 2);
   assert.equal(seq[4].archetype, 'rat_swarmer');
   assert.equal(seq[4].canMove, true);
   assert.equal(seq[4].canAttack, false);
-  assert.ok(seq[4].phaseBanner && seq[4].phaseBanner.includes('Этап 2/3'));
+  assert.ok(seq[4].phaseBanner && seq[4].phaseBanner.includes('Этап 2/4'));
 
-  // Phase 3 (8..11): Requires Campfire + Wall + Potion + Food prep before spawning, then moves and attacks
-  assert.equal(seq[8].archetype, 'rat_swarmer');
+  // Phase 3 (8..11): Combo Training wave (moving targets that do NOT attack yet, step-specific banners)
+  assert.equal(seq[8].phase, 3);
   assert.equal(seq[8].canMove, true);
-  assert.equal(seq[8].canAttack, true);
-  assert.equal(seq[8].requiresPrepBeforeSpawn, true);
-  assert.ok(seq[8].phaseBanner && seq[8].phaseBanner.includes('Этап 3/3'));
+  assert.equal(seq[8].canAttack, false);
+  assert.equal(seq[8].requiresPrepBeforeSpawn, false);
+  assert.ok(seq[8].phaseBanner && seq[8].phaseBanner.includes('Этап 3/4') && seq[8].phaseBanner.includes('Термовзрыв'));
+  assert.ok(seq[9].phaseBanner && seq[9].phaseBanner.includes('Воздушный Удар'));
+  assert.ok(seq[10].phaseBanner && seq[10].phaseBanner.includes('Пиро-Шок'));
+  assert.ok(seq[11].phaseBanner && seq[11].phaseBanner.includes('Грозовой Таран'));
+
+  // Phase 4 (12..15): Requires Campfire + Wall + Potion + Food prep before spawning, then moves and attacks
+  assert.equal(seq[12].phase, 4);
+  assert.equal(seq[12].archetype, 'rat_swarmer');
+  assert.equal(seq[12].canMove, true);
+  assert.equal(seq[12].canAttack, true);
+  assert.equal(seq[12].requiresPrepBeforeSpawn, true);
+  assert.ok(seq[12].phaseBanner && seq[12].phaseBanner.includes('Этап 4/4'));
 
   assert.equal(
     isStage0PrepComplete({
@@ -2081,15 +2107,226 @@ test('Stage 0 (Уровень 0) provides compact training room, 12 sequential 1
     true
   );
 
-  // Stage 0 quests award only small XP and zero reagents
+  // Stage 0 quests award only small XP and zero reagents (now 5 quests including quest_stage0_combos)
   const stage0Quests = INITIAL_QUESTS.filter((q) => q.id.startsWith('quest_stage0_'));
-  assert.equal(stage0Quests.length, 4);
+  assert.equal(stage0Quests.length, 5);
+  assert.equal(stage0Quests.some((q) => q.id === 'quest_stage0_combos' && q.targetCount === 4), true);
   for (const q of stage0Quests) {
     assert.ok(q.rewardXp > 0 && q.rewardXp <= 20);
     assert.equal(q.rewardReagents, undefined);
     assert.equal(q.rewardReagent, undefined);
   }
 });
+
+test('Rare resources protected below Lv3/Lv5 in spell upgrades, Lv6 Elemental Ally scaling, Stage 5 extra trees, and consumable profile fields', () => {
+  const emptyInv: Record<ReagentId, number> = {
+    ancient_wood: 0,
+    mandrake_root: 0,
+    rat_hair: 0,
+    rat_meat: 0,
+    bat_meat: 0,
+    boar_meat: 0,
+    bear_meat: 0,
+    boar_tusk: 0,
+    gargoyle_heart: 0,
+    harpy_feather: 0,
+    dark_core_shard: 0,
+    ice_dragon_scale: 0,
+    fire_essence: 0,
+    water_essence: 0,
+    earth_essence: 0,
+  };
+
+  // Below Level 3 (Lv1->2, Lv2->3): essences, boar_tusk, dark_core_shard, ice_dragon_scale cannot be spent
+  const rareOnlyInv: Record<ReagentId, number> = {
+    ...emptyInv,
+    ancient_wood: 6,
+    boar_tusk: 10,
+    dark_core_shard: 10,
+    ice_dragon_scale: 10,
+    fire_essence: 10,
+    water_essence: 10,
+    earth_essence: 10,
+  };
+  assert.equal(canAffordSpellUpgrade(1, rareOnlyInv), false);
+  assert.equal(canAffordSpellUpgrade(2, { ...rareOnlyInv, gargoyle_heart: 2 }), false);
+
+  // With 8 common reagents + protected rares, Lv1->2 spends ONLY common reagents and leaves rare resources untouched
+  const mixedLv1Inv: Record<ReagentId, number> = {
+    ...rareOnlyInv,
+    ancient_wood: 5,
+    mandrake_root: 3,
+  };
+  assert.equal(canAffordSpellUpgrade(1, mixedLv1Inv), true);
+  const afterLv1 = consumeSpellUpgradeCost(1, mixedLv1Inv);
+  assert.equal(afterLv1.ancient_wood, 0);
+  assert.equal(afterLv1.mandrake_root, 0);
+  assert.equal(afterLv1.boar_tusk, 10);
+  assert.equal(afterLv1.dark_core_shard, 10);
+  assert.equal(afterLv1.ice_dragon_scale, 10);
+  assert.equal(afterLv1.fire_essence, 10);
+
+  // Below Level 5 (Lv3->4, Lv4->5): essences are protected and cannot substitute for missing common/elite reagents
+  const lv3OnlyEssenceInv: Record<ReagentId, number> = {
+    ...emptyInv,
+    ancient_wood: 10,
+    gargoyle_heart: 2,
+    dark_core_shard: 1,
+    fire_essence: 20,
+    water_essence: 20,
+    earth_essence: 20,
+  };
+  assert.equal(canAffordSpellUpgrade(3, lv3OnlyEssenceInv), false);
+  const lv4ExactInv: Record<ReagentId, number> = {
+    ...emptyInv,
+    ancient_wood: 27,
+    gargoyle_heart: 3,
+    dark_core_shard: 2,
+    fire_essence: 5,
+    water_essence: 5,
+    earth_essence: 5,
+  };
+  assert.equal(canAffordSpellUpgrade(4, lv4ExactInv), true);
+  const afterLv4 = consumeSpellUpgradeCost(4, lv4ExactInv);
+  assert.equal(afterLv4.fire_essence, 5);
+  assert.equal(afterLv4.water_essence, 5);
+  assert.equal(afterLv4.earth_essence, 5);
+
+  // Level 6 Elemental Ally clamps to MAX_SPELL_LEVEL (6) rather than 5
+  const allyLv5 = calculateElementalAllyStats('snowman', 100, 5);
+  const allyLv6 = calculateElementalAllyStats('snowman', 100, 6);
+  assert.ok(allyLv6.attackDamage > allyLv5.attackDamage);
+
+  // Stage 5 includes 10 total trees (4 original + 6 extra start/corridor trees)
+  assert.equal(getStage5SpawnSpecs().trees.length, 10);
+
+  // Default profile initializes empty consumable arrays
+  const defChar = createDefaultCharacterProfile('local_guest', 'Тест', 'char_consumable_test');
+  assert.deepEqual(defChar.craftedPotions, []);
+  assert.deepEqual(defChar.cookedFoods, []);
+  assert.deepEqual(defChar.cookedBatFoods, []);
+});
+
+test('4 Spell Combos (thermal_blast 1.5x+burn, air_strike 1.6x+knockback, pyro_shock 1.5x+stun, storm_ram 1.55x), Aimed Co-op Target Ray, and 120x120 Radar Projection', () => {
+  // 1. thermal_blast: freezeTimer > 0 + incendio -> 1.5x damage, +3s burn, consumes freeze
+  const thermalBlast = applyElementalSpellCombo({
+    spellId: 'incendio',
+    baseDamage: 100,
+    freezeTimer: 3.0,
+    stunTimer: 0,
+    levitateTimer: 0,
+  });
+  assert.equal(thermalBlast.damage, 150);
+  assert.equal(thermalBlast.comboType, 'thermal_blast');
+  assert.equal(thermalBlast.consumeFreeze, true);
+  assert.equal(thermalBlast.burnSec, 3.0);
+
+  // 2. air_strike: levitateTimer > 0 + expelliarmus / arcane_sword -> 1.6x damage, 2.4x knockback, consumes levitate
+  const airStrikeExp = applyElementalSpellCombo({
+    spellId: 'expelliarmus',
+    baseDamage: 100,
+    freezeTimer: 0,
+    stunTimer: 0,
+    levitateTimer: 2.5,
+  });
+  assert.equal(airStrikeExp.damage, 160);
+  assert.equal(airStrikeExp.comboType, 'air_strike');
+  assert.equal(airStrikeExp.consumeLevitate, true);
+  assert.equal(airStrikeExp.knockbackMultiplier, 2.4);
+
+  const airStrikeSword = applyElementalSpellCombo({
+    spellId: 'arcane_sword',
+    baseDamage: 50,
+    freezeTimer: 0,
+    stunTimer: 0,
+    levitateTimer: 1.5,
+  });
+  assert.equal(airStrikeSword.damage, 80);
+  assert.equal(airStrikeSword.comboType, 'air_strike');
+  assert.equal(airStrikeSword.consumeLevitate, true);
+
+  // 3. pyro_shock: stunTimer > 0 + incendio -> 1.5x damage, +1.0s stun
+  const pyroShock = applyElementalSpellCombo({
+    spellId: 'incendio',
+    baseDamage: 50,
+    freezeTimer: 0,
+    stunTimer: 1.2,
+    levitateTimer: 0,
+  });
+  assert.equal(pyroShock.damage, 75);
+  assert.equal(pyroShock.comboType, 'pyro_shock');
+  assert.equal(pyroShock.addStunSec, 1.0);
+  assert.equal(pyroShock.consumeStun, false);
+
+  // 4. storm_ram: stunTimer > 0 + expelliarmus -> 1.55x damage, consumes stun
+  const stormRam = applyElementalSpellCombo({
+    spellId: 'expelliarmus',
+    baseDamage: 100,
+    freezeTimer: 0,
+    stunTimer: 1.5,
+    levitateTimer: 0,
+  });
+  assert.equal(stormRam.damage, 155);
+  assert.equal(stormRam.comboType, 'storm_ram');
+  assert.equal(stormRam.consumeStun, true);
+
+  // Remote damage, pet attacks, and burn DoT ticks (isDirectPlayerHit: false) stay unmodified
+  const remoteHit = applyElementalSpellCombo({
+    spellId: 'expelliarmus',
+    baseDamage: 100,
+    freezeTimer: 0,
+    stunTimer: 2.0,
+    fromRemote: true,
+  });
+  assert.equal(remoteHit.damage, 100);
+  assert.equal(remoteHit.comboType, null);
+
+  const dotHit = applyElementalSpellCombo({
+    spellId: 'incendio',
+    baseDamage: 14,
+    freezeTimer: 3.0,
+    stunTimer: 1.0,
+    isDirectPlayerHit: false,
+  });
+  assert.equal(dotHit.damage, 14);
+  assert.equal(dotHit.comboType, null);
+  assert.equal(dotHit.consumeFreeze, false);
+
+  // 3. Aimed Co-op Ally selection ONLY hits ally under reticle ray
+  const allies = [
+    { id: 'ally_side', x: 5, y: 0, z: -6 },
+    { id: 'ally_behind', x: 0, y: 0, z: 6 },
+    { id: 'ally_aimed', x: 0.4, y: 0, z: -9 },
+    { id: 'ally_too_far', x: 0, y: 0, z: -25 },
+  ];
+  const origin = { x: 0, y: 1.7, z: 0 };
+  const dir = { x: 0, y: -0.07, z: -1 };
+  const picked = findAimedTargetOnRay(origin, dir, allies, 18, 1.45);
+  assert.equal(picked?.id, 'ally_aimed');
+
+  // If aiming away from all allies, returns null (never heals non-aimed allies)
+  const missed = findAimedTargetOnRay(origin, { x: 1, y: 0, z: 0 }, allies, 18, 1.45);
+  assert.equal(missed, null);
+
+  // 4. 120x120 Radar projection (1.5 px/m, centered at (60, 60))
+  assert.equal(RADAR_CANVAS_SIZE, 120);
+  assert.equal(RADAR_PX_PER_METER, 1.5);
+  const centerPt = projectRadarPoint(10, 20, 10, 20);
+  assert.equal(centerPt.cx, 60);
+  assert.equal(centerPt.cy, 60);
+  assert.equal(centerPt.inRange, true);
+
+  const offsetPt = projectRadarPoint(20, 4, 10, 20);
+  assert.equal(offsetPt.cx, 75);
+  assert.equal(offsetPt.cy, 36);
+  assert.equal(offsetPt.inRange, true);
+
+  const farPt = projectRadarPoint(60, 20, 10, 20);
+  assert.equal(farPt.distMeters, 50);
+  assert.equal(farPt.inRange, false);
+});
+
+
 
 
 

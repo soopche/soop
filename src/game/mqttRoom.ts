@@ -24,6 +24,7 @@ export const MQTT_BROKERS = [
 export const MQTT_TOPIC_ROOT = 'vox-arcanum-game-2026/room';
 export const PLAYER_HEARTBEAT_MS = 500;
 export const PLAYER_INACTIVITY_TIMEOUT_MS = 3000;
+const sharedTextDecoder = new TextDecoder();
 
 // ============================================================================
 // TWO-DIGIT ROOM CODE, TOPIC & SESSION PLAYER ID HELPERS
@@ -92,7 +93,68 @@ export function getOrCreateSessionPlayerId(
 
 export interface PlayerWireState extends RemotePlayerState {
   isDead: boolean;
+  joinedAtMs: number;
   lastSeenMs: number;
+}
+
+/**
+ * Pure helper to elect the co-op coordinator:
+ * chooses the player with the earliest joinedAtMs (tie-breaking lexicographically by id).
+ */
+export function electCoordinatorId(
+  players: Iterable<Pick<PlayerWireState, 'id' | 'joinedAtMs'>>
+): string | null {
+  let winner: Pick<PlayerWireState, 'id' | 'joinedAtMs'> | null = null;
+  for (const p of players) {
+    if (!winner) {
+      winner = p;
+      continue;
+    }
+    const pJoined = Number.isFinite(p.joinedAtMs) ? p.joinedAtMs : Number.MAX_SAFE_INTEGER;
+    const wJoined = Number.isFinite(winner.joinedAtMs) ? winner.joinedAtMs : Number.MAX_SAFE_INTEGER;
+    if (pJoined < wJoined || (pJoined === wJoined && p.id < winner.id)) {
+      winner = p;
+    }
+  }
+  return winner ? winner.id : null;
+}
+
+/**
+ * Pure helper to maintain worldEventsHistory so dismantled walls remove their wall_place_* entry
+ * and placing a new campfire clears prior campfire_place_* / campfire_light_* entries.
+ */
+export function recordWorldEventHistory(
+  history: Map<string, { eventId: string; payload: SharedWorldEventPayload }>,
+  eventId: string,
+  payload: SharedWorldEventPayload
+): void {
+  if (payload.kind === 'wall_dismantle') {
+    history.delete(`wall_place_${payload.targetId}`);
+    return;
+  }
+  if (payload.kind === 'prop_sync') {
+    return;
+  }
+  if (payload.kind === 'campfire_place') {
+    for (const key of Array.from(history.keys())) {
+      if (key.startsWith('campfire_place_') || key.startsWith('campfire_light_')) {
+        history.delete(key);
+      }
+    }
+  }
+  history.set(`${payload.kind}_${payload.targetId}`, { eventId, payload });
+}
+
+/**
+ * Pure helper to prioritize damaged enemies (hp < maxHp) first and cap enemy sync payload size.
+ */
+export function selectPrioritizedEnemiesForSync<T extends { hp: number; maxHp: number }>(
+  enemies: readonly T[],
+  limit = 40
+): T[] {
+  return [...enemies]
+    .sort((a, b) => (a.hp < a.maxHp ? 0 : 1) - (b.hp < b.maxHp ? 0 : 1))
+    .slice(0, limit);
 }
 
 /**
@@ -287,6 +349,80 @@ export function sanitizeCharacterProfile(
         .slice(0, 50)
     : [];
 
+  const craftedPotions = Array.isArray(raw.craftedPotions)
+    ? raw.craftedPotions
+        .filter(
+          (p): p is CharacterProfileData['craftedPotions'][number] =>
+            Boolean(p) &&
+            typeof p === 'object' &&
+            typeof (p as { id?: unknown }).id === 'string' &&
+            ((p as { kind?: unknown }).kind === 'health' ||
+              (p as { kind?: unknown }).kind === 'mana') &&
+            typeof (p as { name?: unknown }).name === 'string' &&
+            typeof (p as { restoreAmount?: unknown }).restoreAmount === 'number'
+        )
+        .slice(0, 50)
+        .map((p) => ({
+          id: p.id.slice(0, 64),
+          kind: p.kind,
+          name: p.name.slice(0, 64),
+          restoreAmount: clampInt(p.restoreAmount, 1, 500, 10),
+          accuracyPercent: clampInt(p.accuracyPercent, 0, 100, 50),
+        }))
+    : [];
+
+  const cookedFoods = Array.isArray(raw.cookedFoods)
+    ? raw.cookedFoods
+        .filter(
+          (f): f is CharacterProfileData['cookedFoods'][number] =>
+            Boolean(f) &&
+            typeof f === 'object' &&
+            typeof (f as { id?: unknown }).id === 'string' &&
+            typeof (f as { name?: unknown }).name === 'string' &&
+            typeof (f as { bonusMaxHp?: unknown }).bonusMaxHp === 'number' &&
+            typeof (f as { hpRegenPerSec?: unknown }).hpRegenPerSec === 'number' &&
+            typeof (f as { durationSec?: unknown }).durationSec === 'number'
+        )
+        .slice(0, 50)
+        .map((f) => ({
+          id: f.id.slice(0, 64),
+          name: f.name.slice(0, 64),
+          bonusMaxHp: clampInt(f.bonusMaxHp, 1, 500, 10),
+          hpRegenPerSec:
+            typeof f.hpRegenPerSec === 'number' && Number.isFinite(f.hpRegenPerSec)
+              ? Math.max(0, Math.min(20, Number(f.hpRegenPerSec.toFixed(2))))
+              : 0.1,
+          durationSec: clampInt(f.durationSec, 10, 1200, 60),
+          accuracyPercent: clampInt(f.accuracyPercent, 0, 100, 50),
+        }))
+    : [];
+
+  const cookedBatFoods = Array.isArray(raw.cookedBatFoods)
+    ? raw.cookedBatFoods
+        .filter(
+          (f): f is CharacterProfileData['cookedBatFoods'][number] =>
+            Boolean(f) &&
+            typeof f === 'object' &&
+            typeof (f as { id?: unknown }).id === 'string' &&
+            typeof (f as { name?: unknown }).name === 'string' &&
+            typeof (f as { bonusMaxMp?: unknown }).bonusMaxMp === 'number' &&
+            typeof (f as { mpRegenPerSec?: unknown }).mpRegenPerSec === 'number' &&
+            typeof (f as { durationSec?: unknown }).durationSec === 'number'
+        )
+        .slice(0, 50)
+        .map((f) => ({
+          id: f.id.slice(0, 64),
+          name: f.name.slice(0, 64),
+          bonusMaxMp: clampInt(f.bonusMaxMp, 1, 500, 10),
+          mpRegenPerSec:
+            typeof f.mpRegenPerSec === 'number' && Number.isFinite(f.mpRegenPerSec)
+              ? Math.max(0, Math.min(20, Number(f.mpRegenPerSec.toFixed(2))))
+              : 0.1,
+          durationSec: clampInt(f.durationSec, 10, 1200, 60),
+          accuracyPercent: clampInt(f.accuracyPercent, 0, 100, 50),
+        }))
+    : [];
+
   const equippedStaffId = (
     typeof raw.equippedStaffId === 'string' &&
     raw.equippedStaffId.length >= 1 &&
@@ -321,6 +457,9 @@ export function sanitizeCharacterProfile(
     equippedArtifacts,
     spellLevels,
     reagentInventory,
+    craftedPotions,
+    cookedFoods,
+    cookedBatFoods,
     tamedPetSpecies,
     tamedPetLevel: clampInt(raw.tamedPetLevel, 1, 10, 1),
     tamedPetTrainingStep: clampInt(raw.tamedPetTrainingStep, 0, 5, 0),
@@ -385,6 +524,35 @@ export function setActiveCharacterIdInStorage(ownerId: string, characterId: stri
     );
   } catch {
     // Ignore
+  }
+}
+
+export function encodeCharacterCode(profile: CharacterProfileData): string {
+  const sanitized = sanitizeCharacterProfile(profile, profile.ownerId || 'local_guest');
+  return btoa(encodeURIComponent(JSON.stringify(sanitized)));
+}
+
+export function decodeCharacterCode(
+  rawCode: string,
+  ownerId = 'local_guest'
+): CharacterProfileData | null {
+  const trimmed = (rawCode || '').trim();
+  if (!trimmed) return null;
+  try {
+    const json = decodeURIComponent(atob(trimmed));
+    const parsed = JSON.parse(json) as Record<string, unknown> | null;
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      Array.isArray(parsed) ||
+      typeof parsed.name !== 'string' ||
+      !parsed.name.trim()
+    ) {
+      return null;
+    }
+    return sanitizeCharacterProfile(parsed, ownerId);
+  } catch {
+    return null;
   }
 }
 
@@ -461,6 +629,12 @@ export interface MqttRoomConnectionOptions {
     attackerName: string;
     damage: number;
   }) => void;
+  onPlayerHealed?: (data: {
+    targetId: string;
+    healerId: string;
+    healerName: string;
+    healAmount: number;
+  }) => void;
   onDuelReset: () => void;
 }
 
@@ -490,6 +664,7 @@ export interface MqttRoomController {
     color: string;
   }) => void;
   sendPlayerHit: (targetId: string, damage: number, attackerName: string) => void;
+  sendPlayerHeal: (targetId: string, healAmount: number, healerName: string) => void;
   sendEnemyHit: (payload: {
     hitId: string;
     enemyId: string;
@@ -545,7 +720,7 @@ type PlayerTopicPayload =
   | {
       type: 'state';
       join?: boolean;
-      player: RemotePlayerState & { isDead: boolean };
+      player: RemotePlayerState & { isDead: boolean; joinedAtMs?: number };
     }
   | {
       type: 'leave';
@@ -582,6 +757,14 @@ type RoomEventMessage =
       attackerId: string;
       attackerName: string;
       damage: number;
+    }
+  | {
+      type: 'player_heal';
+      eventId: string;
+      targetId: string;
+      healerId: string;
+      healerName: string;
+      healAmount: number;
     }
   | {
       type: 'enemy_hit';
@@ -702,6 +885,8 @@ export function connectMqttRoom(opts: MqttRoomConnectionOptions): MqttRoomContro
   let currentLabyrinthStage: number = opts.stage;
   let currentStageEpoch = 1;
 
+  const selfJoinedAtMs = Date.now();
+
   let selfPlayer: PlayerWireState = {
     id: selfId,
     name: (opts.playerName || 'Арканист').trim().slice(0, 40) || 'Арканист',
@@ -716,7 +901,8 @@ export function connectMqttRoom(opts: MqttRoomConnectionOptions): MqttRoomContro
     shieldActive: false,
     wins: 0,
     isDead: false,
-    lastSeenMs: Date.now(),
+    joinedAtMs: selfJoinedAtMs,
+    lastSeenMs: selfJoinedAtMs,
   };
 
   const playersMap = new Map<string, PlayerWireState>();
@@ -744,8 +930,8 @@ export function connectMqttRoom(opts: MqttRoomConnectionOptions): MqttRoomContro
   };
 
   const isCoordinator = (): boolean => {
-    const ids = Array.from(playersMap.keys()).sort();
-    return ids.length === 0 || ids[0] === selfId;
+    const winnerId = electCoordinatorId(playersMap.values());
+    return winnerId === null || winnerId === selfId;
   };
 
   const emitPlayersSync = () => {
@@ -764,7 +950,7 @@ export function connectMqttRoom(opts: MqttRoomConnectionOptions): MqttRoomContro
     for (const d of nextDead) seenDeadIds.add(d);
 
     opts.onPlayersSync(
-      list.map(({ isDead: _d, lastSeenMs: _l, ...remote }) => remote)
+      list.map(({ isDead: _d, joinedAtMs: _j, lastSeenMs: _l, ...remote }) => remote)
     );
   };
 
@@ -819,9 +1005,15 @@ export function connectMqttRoom(opts: MqttRoomConnectionOptions): MqttRoomContro
       const incomingId = msg.player.id || topicPlayerId;
       if (!incomingId || incomingId === selfId) return;
       const wasKnown = playersMap.has(incomingId);
+      const shouldSendInitAsCoordinator = !wasKnown || msg.join ? isCoordinator() : false;
+      const existingPlayer = playersMap.get(incomingId);
       const nextPlayer: PlayerWireState = {
         ...msg.player,
         id: incomingId,
+        joinedAtMs:
+          typeof msg.player.joinedAtMs === 'number' && Number.isFinite(msg.player.joinedAtMs)
+            ? msg.player.joinedAtMs
+            : existingPlayer?.joinedAtMs ?? Date.now(),
         lastSeenMs: Date.now(),
       };
       playersMap.set(incomingId, nextPlayer);
@@ -831,7 +1023,7 @@ export function connectMqttRoom(opts: MqttRoomConnectionOptions): MqttRoomContro
       // and coordinator sends current world/enemy snapshot.
       if (!wasKnown || msg.join) {
         publishSelfState(false);
-        if (isCoordinator() && (enemiesMap.size > 0 || worldEventsHistory.size > 0 || currentLabyrinthStage > 1 || currentLabyrinthMode !== 'shared')) {
+        if (shouldSendInitAsCoordinator && (enemiesMap.size > 0 || worldEventsHistory.size > 0 || currentLabyrinthStage > 1 || currentLabyrinthMode !== 'shared')) {
           publishJson(eventsTopic, {
             type: 'init_state',
             eventId: `init_${selfId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -872,7 +1064,7 @@ export function connectMqttRoom(opts: MqttRoomConnectionOptions): MqttRoomContro
         }
         for (const item of msg.worldEvents) {
           if (!rememberId(item.eventId)) {
-            worldEventsHistory.set(`${item.payload.kind}_${item.payload.targetId}`, item);
+            recordWorldEventHistory(worldEventsHistory, item.eventId, item.payload);
             opts.onWorldEvent(item.payload);
           }
         }
@@ -900,6 +1092,17 @@ export function connectMqttRoom(opts: MqttRoomConnectionOptions): MqttRoomContro
           attackerId: msg.attackerId,
           attackerName: msg.attackerName,
           damage: msg.damage,
+        });
+        break;
+      }
+
+      case 'player_heal': {
+        if (msg.targetId !== selfId || rememberId(msg.eventId)) return;
+        opts.onPlayerHealed?.({
+          targetId: msg.targetId,
+          healerId: msg.healerId,
+          healerName: msg.healerName,
+          healAmount: msg.healAmount,
         });
         break;
       }
@@ -996,14 +1199,7 @@ export function connectMqttRoom(opts: MqttRoomConnectionOptions): MqttRoomContro
         if (msg.senderId === selfId) return;
         if (msg.payload.kind !== 'prop_sync' && rememberId(msg.eventId)) return;
 
-        if (msg.payload.kind === 'wall_dismantle') {
-          worldEventsHistory.delete(`wall_${msg.payload.targetId}`);
-        } else if (msg.payload.kind !== 'prop_sync') {
-          worldEventsHistory.set(`${msg.payload.kind}_${msg.payload.targetId}`, {
-            eventId: msg.eventId,
-            payload: msg.payload,
-          });
-        }
+        recordWorldEventHistory(worldEventsHistory, msg.eventId, msg.payload);
         opts.onWorldEvent(msg.payload);
         break;
       }
@@ -1198,7 +1394,7 @@ export function connectMqttRoom(opts: MqttRoomConnectionOptions): MqttRoomContro
         const text =
           typeof messageBuffer === 'string'
             ? messageBuffer
-            : new TextDecoder().decode(messageBuffer);
+            : sharedTextDecoder.decode(messageBuffer);
         parsed = JSON.parse(text);
       } catch {
         return;
@@ -1318,6 +1514,20 @@ export function connectMqttRoom(opts: MqttRoomConnectionOptions): MqttRoomContro
       } satisfies RoomEventMessage);
     },
 
+    sendPlayerHeal: (targetId, healAmount, healerName) => {
+      if (disposed || !targetId || healAmount <= 0) return;
+      const eventId = `pheal_${selfId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      rememberId(eventId);
+      publishJson(eventsTopic, {
+        type: 'player_heal',
+        eventId,
+        targetId,
+        healerId: selfId,
+        healerName,
+        healAmount: Math.max(1, Math.round(healAmount)),
+      } satisfies RoomEventMessage);
+    },
+
     sendEnemyHit: (payload) => {
       if (disposed || currentLabyrinthMode !== 'shared') return;
       const hitId =
@@ -1387,7 +1597,8 @@ export function connectMqttRoom(opts: MqttRoomConnectionOptions): MqttRoomContro
       if (!isCoordinator() && playersMap.size > 1) return;
 
       lastEnemySyncAt = now;
-      const normalized: EnemyWireState[] = payload.enemies.slice(0, 14).map((e) => ({
+      const prioritized = selectPrioritizedEnemiesForSync(payload.enemies, 40);
+      const normalized: EnemyWireState[] = prioritized.map((e) => ({
         id: e.id,
         stage: payload.stage,
         hp: Math.max(0, Math.round(e.hp)),
@@ -1422,11 +1633,7 @@ export function connectMqttRoom(opts: MqttRoomConnectionOptions): MqttRoomContro
       const eventId = `wev_${selfId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
       rememberId(eventId);
 
-      if (payload.kind === 'wall_dismantle') {
-        worldEventsHistory.delete(`wall_${payload.targetId}`);
-      } else if (payload.kind !== 'prop_sync') {
-        worldEventsHistory.set(`${payload.kind}_${payload.targetId}`, { eventId, payload });
-      }
+      recordWorldEventHistory(worldEventsHistory, eventId, payload);
 
       publishJson(eventsTopic, {
         type: 'world_event',
