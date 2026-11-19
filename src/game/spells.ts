@@ -347,7 +347,7 @@ export interface QuestDef {
 }
 
 export const UNIFORM_MANA_COST = 15;
-export const WINGARDIUM_MANA_COST = 10;
+export const WINGARDIUM_MANA_COST = 15;
 export const SPECIAL_MANA_COST = 30;
 export const SPELL_COOLDOWN_SEC = 5.0;
 export const MIN_UPGRADED_SPELL_COOLDOWN_SEC = 4.0;
@@ -1378,9 +1378,9 @@ export const SPELLS: Record<SpellId, SpellDef> = {
     name: 'Вингардиум Левиоса',
     shortWord: 'Левиоса',
     latinName: 'Wingardium Leviosa',
-    roleClue: 'Телекинез · Щит и Бросок · 10 МП · КД 5с→4с',
+    roleClue: 'Телекинез · Щит и Бросок · 15 МП · КД 5с→4с',
     description:
-      'Захватывает физический объект в качестве летающего щита перед вами или швыряет его во врага как снаряд. Стоит всего 10 маны.',
+      'Захватывает физический объект в качестве летающего щита перед вами или швыряет его во врага как снаряд. Стоит 15 маны.',
     voiceTriggers: [
       'левиоса',
       'тяни',
@@ -3177,8 +3177,8 @@ export function calculateSpellCastStats(params: {
     healAmount = 25;
   } else {
     modeUsed = 'quick';
-    rawBaseDamage = 2;
-    castQualityPercent = 15;
+    rawBaseDamage = Math.max(1, Math.round(spell.baseDamage * 0.2));
+    castQualityPercent = ALTERNATIVE_QUICK_CAST_QUALITY;
     healAmount = 15;
   }
 
@@ -3234,7 +3234,7 @@ export function calculateSpellCastStats(params: {
   }
 
   const reagentMult = reagent ? reagent.powerMultiplier : 1.0;
-  const equipMult = modeUsed === 'quick' ? 1.0 : equip.powerBonus;
+  const equipMult = equip.powerBonus;
   const glovesSpellMult = 1 + artBonuses.spellDamageBonusPercent / 100;
   const finalDamage = Math.max(
     2,
@@ -7868,14 +7868,13 @@ export function computePlayerVitalsAfterXpGain(params: {
 
 export type ControlSchemeId = 'classic' | 'alternative';
 
-export const ALTERNATIVE_QUICK_CAST_QUALITY = 30;
+export const ALTERNATIVE_QUICK_CAST_QUALITY = 20;
 
 /**
  * Resolves the effective cast mode and gesture accuracy based on the active control scheme.
- * - 'classic': leaves all cast parameters 100% untouched.
- * - 'alternative':
- *   - Upgrades 'quick' casts ([Space] or short [RMB] click without drawing) to 'drawn' at 30% quality so players can cast on button press for 30% power.
- *   - Leaves 'voice' and 'drawn' / 'voice_and_drawn' untouched ("голосом как обычно", no artificial accuracy bonus).
+ * - Quick casts ([Space] or short click without drawing) in BOTH 'classic' and 'alternative'
+ *   modes evaluate as 'quick' at 20% spell power (ALTERNATIVE_QUICK_CAST_QUALITY = 20).
+ * - Leaves 'voice' and 'drawn' / 'voice_and_drawn' untouched.
  */
 export function resolveControlSchemeCastParams(params: {
   controlScheme: ControlSchemeId;
@@ -7885,9 +7884,9 @@ export function resolveControlSchemeCastParams(params: {
   effectiveCastMode: CastInputMode;
   effectiveGestureAccuracy: number;
 } {
-  if (params.controlScheme === 'alternative' && params.rawCastMode === 'quick') {
+  if (params.rawCastMode === 'quick') {
     return {
-      effectiveCastMode: 'drawn',
+      effectiveCastMode: 'quick',
       effectiveGestureAccuracy: ALTERNATIVE_QUICK_CAST_QUALITY,
     };
   }

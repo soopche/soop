@@ -1651,7 +1651,7 @@ export const GrimoireModal: React.FC<GrimoireModalProps> = ({
                       <div className="p-3 rounded-lg bg-[#12101b] border border-[#2a233d]">
                         <div className="text-[10px] text-[#a39bb5]">БЫСТРО [Пробел]</div>
                         <div className="text-base font-bold text-white mt-0.5">
-                          {Math.round(2 * activeSpellMult)} ур. · {activeSpellCooldown}с
+                          {Math.max(1, Math.round(activeSpell.baseDamage * 0.2 * activeSpellMult))} ур. · {activeSpellCooldown}с
                         </div>
                       </div>
                       <div className="p-3 rounded-lg bg-[#12101b] border border-[#2a233d]">
@@ -1677,7 +1677,7 @@ export const GrimoireModal: React.FC<GrimoireModalProps> = ({
                       <div className="p-3 rounded-lg bg-[#12101b] border border-[#2a233d]">
                         <div className="text-[10px] text-[#a39bb5]">БЫСТРО [Пробел]</div>
                         <div className="text-base font-bold text-white mt-0.5">
-                          {Math.round(2 * activeSpellMult)} ур.
+                          {Math.max(1, Math.round(activeSpell.baseDamage * 0.2 * activeSpellMult))} ур.
                         </div>
                       </div>
                       <div className="p-3 rounded-lg bg-[#12101b] border border-[#2a233d]">
@@ -1702,7 +1702,7 @@ export const GrimoireModal: React.FC<GrimoireModalProps> = ({
                     <div className="p-3 rounded-lg bg-[#12101b] border border-[#2a233d]">
                       <div className="text-[10px] text-[#a39bb5]">БЫСТРО [Пробел]</div>
                       <div className="text-base font-bold text-white mt-0.5">
-                        {Math.round(2 * activeSpellMult)} ур.
+                        {Math.max(1, Math.round(activeSpell.baseDamage * 0.2 * activeSpellMult))} ур.
                       </div>
                     </div>
                     <div className="p-3 rounded-lg bg-[#12101b] border border-[#2a233d]">
@@ -1723,7 +1723,7 @@ export const GrimoireModal: React.FC<GrimoireModalProps> = ({
                     <div className="p-3 rounded-lg bg-[#12101b] border border-[#2a233d]">
                       <div className="text-[10px] text-[#a39bb5]">БЫСТРО [Пробел]</div>
                       <div className="text-base font-bold text-white mt-0.5">
-                        {Math.round(2 * activeSpellMult)} ур.
+                        {Math.max(1, Math.round(activeSpell.baseDamage * 0.2 * activeSpellMult))} ур.
                       </div>
                     </div>
                     <div className="p-3 rounded-lg bg-[#12101b] border border-[#2a233d]">

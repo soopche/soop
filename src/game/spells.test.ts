@@ -284,7 +284,7 @@ test('evaluateGestureAccuracy rewards complete accurate trace including Heart fo
 });
 
 test('calculateSpellCastStats enforces 5.0s->4.0s cooldowns, Teleport 10s CD/range/damage scaling, Stupefy 4..20/5, and Lv4+ 2 projectiles', () => {
-  // 1. Quick unprepared attack shot -> strictly 2 damage, 15 MP, 5.0s cooldown at Level 1
+  // 1. Quick unprepared attack shot -> 20% spell power (30 * 0.2 = 6), 15 MP, 5.0s cooldown at Level 1
   const quickShot = calculateSpellCastStats({
     spellId: 'incendio',
     castMode: 'quick',
@@ -294,13 +294,14 @@ test('calculateSpellCastStats enforces 5.0s->4.0s cooldowns, Teleport 10s CD/ran
     spellLevel: 1,
     staffId: 'wand_ollivander',
   });
-  assert.equal(quickShot.rawBaseDamage, 2);
-  assert.equal(quickShot.finalDamage, 2);
+  assert.equal(quickShot.rawBaseDamage, 6);
+  assert.equal(quickShot.finalDamage, 6);
+  assert.equal(quickShot.castQualityPercent, 20);
   assert.equal(quickShot.manaCost, UNIFORM_MANA_COST);
   assert.equal(quickShot.cooldownSec, 5.0);
   assert.equal(quickShot.projectileCount, 1);
 
-  // 2. Wingardium ("Тяни") costs 10 MP
+  // 2. Wingardium ("Левиоса") costs 15 MP
   const wingardiumCast = calculateSpellCastStats({
     spellId: 'wingardium',
     castMode: 'voice',
@@ -311,7 +312,7 @@ test('calculateSpellCastStats enforces 5.0s->4.0s cooldowns, Teleport 10s CD/ran
     staffId: 'wand_ollivander',
   });
   assert.equal(wingardiumCast.manaCost, WINGARDIUM_MANA_COST);
-  assert.equal(wingardiumCast.manaCost, 10);
+  assert.equal(wingardiumCast.manaCost, 15);
 
   // 3. Cooldown scales from 5.0s (Level 1) down to 4.0s (Level 5) and 3.75s (Level 6), and Level 4+ fires 2 projectiles for combat spells
   assert.equal(getSpellCooldownForLevel('incendio', 1), 5.0);
@@ -400,7 +401,7 @@ test('calculateSpellCastStats enforces 5.0s->4.0s cooldowns, Teleport 10s CD/ran
     staffId: 'wand_ollivander',
   });
   assert.equal(tpQuick.cooldownSec, 10.0);
-  assert.equal(tpQuick.finalDamage, 2);
+  assert.equal(tpQuick.finalDamage, 6);
   assert.equal(tpVoice.finalDamage, 14);
   assert.ok(tpVoice.cooldownSec < tpQuick.cooldownSec && tpVoice.cooldownSec > tpPerfectDraw.cooldownSec);
   assert.equal(tpPerfectDraw.finalDamage, 30);
@@ -1989,26 +1990,39 @@ test('Arcane Sword 5-second expiring warning sound (30% quieter) and preserving 
   assert.equal(afterLevelUpKill.nextMp, 35);
 });
 
-test('Alternative Control Scheme supports 30% cast on button press, unmodified voice/drawn accuracy, and inverted mouse wheel spell cycling', () => {
-  assert.equal(ALTERNATIVE_QUICK_CAST_QUALITY, 30);
+test('Quick cast deals 20% spell power in BOTH classic and alternative schemes, unmodified voice/drawn accuracy, and inverted mouse wheel spell cycling', () => {
+  assert.equal(ALTERNATIVE_QUICK_CAST_QUALITY, 20);
 
-  // 1. Classic mode keeps quick cast as weak unprepared shot ('quick', 0%)
+  // 1. Classic mode quick cast evaluates at 20% quality ('quick', 20%)
   const classicQuick = resolveControlSchemeCastParams({
     controlScheme: 'classic',
     rawCastMode: 'quick',
     rawGestureAccuracy: 0,
   });
   assert.equal(classicQuick.effectiveCastMode, 'quick');
-  assert.equal(classicQuick.effectiveGestureAccuracy, 0);
+  assert.equal(classicQuick.effectiveGestureAccuracy, 20);
 
-  // 2. Alternative mode converts quick cast ([Space] / short [RMB] click) to 30% rune quality ('drawn', 30%)
+  // 2. Alternative mode quick cast ([Space] / short click) also evaluates at 20% quality ('quick', 20%)
   const altQuick = resolveControlSchemeCastParams({
     controlScheme: 'alternative',
     rawCastMode: 'quick',
     rawGestureAccuracy: 0,
   });
-  assert.equal(altQuick.effectiveCastMode, 'drawn');
-  assert.equal(altQuick.effectiveGestureAccuracy, 30);
+  assert.equal(altQuick.effectiveCastMode, 'quick');
+  assert.equal(altQuick.effectiveGestureAccuracy, 20);
+
+  // Verify quick cast scales with spellLevelMult & equipment (e.g. Lv5 incendio 6 * 1.8 = 11)
+  const quickLv5 = calculateSpellCastStats({
+    spellId: 'incendio',
+    castMode: 'quick',
+    gestureAccuracy: 20,
+    voiceMatched: false,
+    playerLevel: 1,
+    spellLevel: 5,
+    staffId: 'wand_ollivander',
+  });
+  assert.equal(quickLv5.rawBaseDamage, 6);
+  assert.equal(quickLv5.finalDamage, Math.round(6 * 1.8));
 
   // 3. Voice and Drawn casts are untouched in Alternative mode (no artificial accuracy bonus)
   const altVoice = resolveControlSchemeCastParams({

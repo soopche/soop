@@ -347,6 +347,7 @@ export default function App() {
   const [grimoireTab, setGrimoireTab] = useState<GrimoireTab>('craft');
   const [buildMenuOpen, setBuildMenuOpen] = useState(false);
   const [hudHideStep, setHudHideStep] = useState<0 | 1 | 2 | 3 | 4>(0);
+  const [pauseSubmenu, setPauseSubmenu] = useState<'main' | 'sound' | 'graphics' | 'controls' | 'coop'>('main');
   const [radarVisible, setRadarVisible] = useState(true);
   const radarCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(() =>
@@ -605,7 +606,7 @@ export default function App() {
       }
       showToast(
         scheme === 'alternative'
-          ? '⚡ Включено Основное управление (Лёгкое): поворот камеры мышью без [ЛКМ], клик [ЛКМ]/[Пробел] — каст 30%, зажать [ПКМ] — рисование руны от жёлтой точки!'
+          ? '⚡ Включено Основное управление (Лёгкое): поворот камеры мышью без [ЛКМ], клик [ЛКМ]/[Пробел] — каст 20%, зажать [ПКМ] — рисование руны от жёлтой точки!'
           : '🪄 Включено Классическое управление (дополнительный режим)'
       );
     },
@@ -1831,7 +1832,14 @@ export default function App() {
     }
   }, [endStats, showToast]);
 
+  useEffect(() => {
+    if (gameState !== 'paused') {
+      setPauseSubmenu('main');
+    }
+  }, [gameState]);
+
   const handleTogglePause = useCallback(() => {
+    setPauseSubmenu('main');
     setGameState((prev) => {
       if (prev === 'playing') {
         worldRef.current?.setMode('paused');
@@ -2713,7 +2721,7 @@ export default function App() {
       if (stateRef.current.controlScheme === 'alternative') {
         tryEngageAlternativePointerLock();
 
-        // In Alternative Control Scheme, LMB click immediately casts the selected spell at 30% power (or swings the Arcane Sword)!
+        // In Alternative Control Scheme, LMB click immediately casts the selected spell at 20% power (or swings the Arcane Sword)!
         if (
           worldRef.current?.hasActiveArcaneSword() &&
           stateRef.current.selectedSpellId === 'arcane_sword'
@@ -2936,7 +2944,7 @@ export default function App() {
         });
         pendingVoiceSpellRef.current = null;
       } else if (stateRef.current.controlScheme === 'alternative') {
-        // In Alternative Control Scheme, a short RMB click without drawing fires the spell at 30% power!
+        // In Alternative Control Scheme, a short RMB click without drawing fires the spell at 20% power!
         triggerSpellCast({
           spellId: selectedSpellId,
           castMode: 'quick',
@@ -4552,8 +4560,8 @@ export default function App() {
                     <span className="text-[#94a3b8]">Каст по нажатию:</span>
                     <strong className="text-[#fde047]">
                       {controlScheme === 'alternative'
-                        ? 'Клик [ЛКМ] / [Пробел] / Клик [ПКМ] (30% силы!)'
-                        : '[Пробел]'}
+                        ? 'Клик [ЛКМ] / [Пробел] / Клик [ПКМ] (20% силы!)'
+                        : '[Пробел] (20% силы!)'}
                     </strong>
                   </div>
                   <div className="flex items-center justify-between py-0.5">
@@ -4734,7 +4742,7 @@ export default function App() {
       )}
 
       {/* =====================================================================
-          4. PAUSE & SETTINGS MODAL ('paused' — Sound, Mute, Simplified Graphics, Character)
+          4. COMPACT STEP-BY-STEP PAUSE & SETTINGS MODAL ('paused')
          ===================================================================== */}
       {gameState === 'paused' && !grimoireOpen && !accountModalOpen && (
         <div
@@ -4744,264 +4752,293 @@ export default function App() {
           className="fixed inset-0 z-40 flex items-center justify-center p-4 pointer-events-auto"
           style={{ backgroundColor: 'rgba(9, 8, 13, 0.84)' }}
         >
-          <div className="w-full max-w-md bg-[#14111f] border border-[#3b3154] rounded-xl p-6 space-y-4 text-center shadow-2xl">
-            <h2 className="font-display text-2xl font-bold text-[#fde047]">
-              Настройки и Пауза
+          <div className="w-full max-w-sm bg-[#14111f] border border-[#3b3154] rounded-xl p-5 space-y-2.5 text-center shadow-2xl">
+            <h2 className="font-display text-xl font-bold text-[#fde047] pb-1">
+              {pauseSubmenu === 'main'
+                ? 'Настройки и Пауза'
+                : pauseSubmenu === 'sound'
+                ? '🔊 Звук'
+                : pauseSubmenu === 'graphics'
+                ? '🖥️ Графика'
+                : pauseSubmenu === 'controls'
+                ? '🎮 Управление'
+                : '🌐 Кооп и Режим'}
             </h2>
 
-            {/* SOUND SETTINGS (Volume Slider + Mute Toggle) */}
-            <div
-              data-testid="pause-sound-settings"
-              className="p-3.5 rounded-xl bg-[#1b1729] border border-[#2a233d] text-left space-y-2.5"
-            >
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold uppercase tracking-wider text-[#e2d9f3]">
-                  🔊 Настройка звука
-                </span>
+            {pauseSubmenu === 'main' ? (
+              <div className="flex flex-col gap-2">
                 <button
                   type="button"
-                  data-testid="pause-mute-toggle-btn"
-                  onClick={() => {
-                    setMuted((prev) => {
-                      const next = !prev;
-                      audioEngine.setMuted(next);
-                      return next;
-                    });
-                  }}
-                  className={`px-3 py-1 rounded-lg border text-xs font-bold transition-colors cursor-pointer ${
-                    muted
-                      ? 'bg-[#3b151c] border-[#ef4444] text-[#fecaca]'
-                      : 'bg-[#132a1f] border-[#22c55e] text-[#bbf7d0]'
+                  onClick={handleTogglePause}
+                  className="w-full py-2.5 text-sm font-bold bg-[#f59e0b] hover:bg-[#fbbf24] text-[#09080d] rounded-lg transition-colors cursor-pointer"
+                >
+                  ▶ Продолжить [Esc]
+                </button>
+                <button
+                  type="button"
+                  data-testid="pause-menu-sound-btn"
+                  onClick={() => setPauseSubmenu('sound')}
+                  className="w-full py-2 px-3 text-xs font-semibold bg-[#1b1729] hover:bg-[#251f38] border border-[#2a233d] text-[#e2d9f3] rounded-lg flex items-center justify-between transition-colors cursor-pointer"
+                >
+                  <span>🔊 Звук ({muted ? 'ВЫКЛ' : `${masterVolume}%`})</span>
+                  <span>→</span>
+                </button>
+                <button
+                  type="button"
+                  data-testid="pause-menu-graphics-btn"
+                  onClick={() => setPauseSubmenu('graphics')}
+                  className="w-full py-2 px-3 text-xs font-semibold bg-[#1b1729] hover:bg-[#251f38] border border-[#2a233d] text-[#e2d9f3] rounded-lg flex items-center justify-between transition-colors cursor-pointer"
+                >
+                  <span>
+                    🖥️ Графика (
+                    {graphicsQuality === 'high'
+                      ? 'Высокая'
+                      : graphicsQuality === 'medium'
+                      ? 'Средняя'
+                      : 'Мин.'}
+                    )
+                  </span>
+                  <span>→</span>
+                </button>
+                <button
+                  type="button"
+                  data-testid="pause-menu-controls-btn"
+                  onClick={() => setPauseSubmenu('controls')}
+                  className="w-full py-2 px-3 text-xs font-semibold bg-[#1b1729] hover:bg-[#251f38] border border-[#2a233d] text-[#e2d9f3] rounded-lg flex items-center justify-between transition-colors cursor-pointer"
+                >
+                  <span>🎮 Управление</span>
+                  <span>→</span>
+                </button>
+                <button
+                  type="button"
+                  data-testid="pause-menu-coop-btn"
+                  onClick={() => setPauseSubmenu('coop')}
+                  className="w-full py-2 px-3 text-xs font-semibold bg-[#1b1729] hover:bg-[#251f38] border border-[#2a233d] text-[#e2d9f3] rounded-lg flex items-center justify-between transition-colors cursor-pointer"
+                >
+                  <span>🌐 Кооп и Режим</span>
+                  <span>→</span>
+                </button>
+                <button
+                  type="button"
+                  data-testid="pause-account-btn"
+                  onClick={() => setAccountModalOpen(true)}
+                  className="w-full py-2 px-3 text-xs font-bold bg-[#251f38] hover:bg-[#332a4d] border border-[#a855f7] text-[#e9d5ff] rounded-lg transition-colors cursor-pointer"
+                >
+                  👤 Персонаж и Уровни
+                </button>
+                <button
+                  type="button"
+                  data-testid="pause-fullscreen-btn"
+                  onClick={toggleFullscreen}
+                  className={`w-full py-2 px-3 text-xs font-bold rounded-lg border transition-colors cursor-pointer ${
+                    isFullscreen
+                      ? 'bg-[#132a1f] border-[#22c55e] text-[#bbf7d0] hover:bg-[#173628]'
+                      : 'bg-[#132638] border-[#38bdf8] text-[#bae6fd] hover:bg-[#1a344c]'
                   }`}
                 >
-                  {muted ? '🔇 Мут: ВКЛ' : '🔊 Звук: ВКЛ'}
+                  {isFullscreen
+                    ? '⛶ Полный экран [F11]: ВКЛ'
+                    : '⛶ Полный экран [F11]'}
                 </button>
+                <div className="grid grid-cols-2 gap-2 pt-0.5">
+                  <button
+                    type="button"
+                    onClick={handleRestartGame}
+                    className="py-2 text-xs font-semibold bg-[#231e36] hover:bg-[#312a4a] text-white rounded-lg transition-colors cursor-pointer"
+                  >
+                    🔄 Заново
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPauseSubmenu('main');
+                      worldRef.current?.setMode('title');
+                      setGameState('title');
+                    }}
+                    className="py-2 text-xs font-semibold bg-[#181524] hover:bg-[#231e36] text-[#cbd5e1] rounded-lg transition-colors cursor-pointer"
+                  >
+                    🏠 В меню
+                  </button>
+                </div>
               </div>
-              <div className="flex items-center gap-3">
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  value={muted ? 0 : masterVolume}
-                  data-testid="pause-volume-slider"
-                  onChange={(e) => {
-                    const val = Number(e.target.value);
-                    setMasterVolume(val);
-                    if (val > 0 && muted) {
-                      setMuted(false);
-                      audioEngine.setMuted(false);
-                    }
-                    audioEngine.setMasterVolume(val / 100);
-                  }}
-                  className="w-full accent-[#f59e0b] cursor-pointer"
-                />
-                <span className="text-xs font-mono-num font-bold text-[#fde047] w-11 text-right">
-                  {muted ? '0%' : `${masterVolume}%`}
-                </span>
-              </div>
-            </div>
+            ) : (
+              <div className="space-y-3">
+                {pauseSubmenu === 'sound' && (
+                  <div
+                    data-testid="pause-sound-settings"
+                    className="p-3.5 rounded-xl bg-[#1b1729] border border-[#2a233d] space-y-3"
+                  >
+                    <button
+                      type="button"
+                      data-testid="pause-mute-toggle-btn"
+                      onClick={() => {
+                        setMuted((prev) => {
+                          const next = !prev;
+                          audioEngine.setMuted(next);
+                          return next;
+                        });
+                      }}
+                      className={`w-full py-2 px-3 rounded-lg border text-xs font-bold transition-colors cursor-pointer ${
+                        muted
+                          ? 'bg-[#3b151c] border-[#ef4444] text-[#fecaca]'
+                          : 'bg-[#132a1f] border-[#22c55e] text-[#bbf7d0]'
+                      }`}
+                    >
+                      {muted ? '🔇 Мут: ВКЛ' : '🔊 Звук: ВКЛ'}
+                    </button>
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        value={muted ? 0 : masterVolume}
+                        data-testid="pause-volume-slider"
+                        onChange={(e) => {
+                          const val = Number(e.target.value);
+                          setMasterVolume(val);
+                          if (val > 0 && muted) {
+                            setMuted(false);
+                            audioEngine.setMuted(false);
+                          }
+                          audioEngine.setMasterVolume(val / 100);
+                        }}
+                        className="w-full accent-[#f59e0b] cursor-pointer"
+                      />
+                      <span className="text-xs font-mono-num font-bold text-[#fde047] w-11 text-right">
+                        {muted ? '0%' : `${masterVolume}%`}
+                      </span>
+                    </div>
+                  </div>
+                )}
 
-            {/* CONTROL SCHEME SETTINGS (Alternative Easy/Action Mode Primary, Classic in Settings) */}
-            <div
-              data-testid="pause-control-scheme-settings"
-              className="p-3.5 rounded-xl bg-[#1b1729] border border-[#2a233d] text-left space-y-2"
-            >
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold uppercase tracking-wider text-[#e2d9f3]">
-                  🎮 Режим управления
-                </span>
-                <span className="text-[10px] font-mono-num text-[#38bdf8]">
-                  {controlScheme === 'alternative' ? '⚡ Основное (Лёгкое)' : '🪄 Классическое'}
-                </span>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  data-testid="control-scheme-alternative-btn"
-                  onClick={() => handleSelectControlScheme('alternative')}
-                  className={`py-2 px-2.5 rounded-lg border text-xs font-bold transition-colors cursor-pointer ${
-                    controlScheme === 'alternative'
-                      ? 'bg-[#132a1f] border-[#22c55e] text-[#bbf7d0] shadow-md'
-                      : 'bg-[#12101b] border-[#2a233d] text-[#94a3b8] hover:text-white'
-                  }`}
-                >
-                  ⚡ Основное (Лёгкое)
-                </button>
-                <button
-                  type="button"
-                  data-testid="control-scheme-classic-btn"
-                  onClick={() => handleSelectControlScheme('classic')}
-                  className={`py-2 px-2.5 rounded-lg border text-xs font-bold transition-colors cursor-pointer ${
-                    controlScheme === 'classic'
-                      ? 'bg-[#2a1f10] border-[#f59e0b] text-[#fde047]'
-                      : 'bg-[#12101b] border-[#2a233d] text-[#94a3b8] hover:text-white'
-                  }`}
-                >
-                  🪄 Классическое (Доп.)
-                </button>
-              </div>
-              <div className="text-[11px] leading-snug text-[#a39bb5]">
-                {controlScheme === 'alternative'
-                  ? '⚡ Камера поворачивается просто движением мыши (без зажатия [ЛКМ]), клик [ЛКМ]/[Пробел] сразу бьёт на 30% силы, а при зажатии [ПКМ] камера фиксируется на цели и перо автоматически рисует от жёлтой точки в центре экрана!'
-                  : '🪄 Поворот камеры зажатием [ЛКМ] (или [Q]/[T]), выбор заклинаний колесом мыши или [1–G], рисование рун зажатием [ПКМ] по центру экрана.'}
-              </div>
-            </div>
+                {pauseSubmenu === 'graphics' && (
+                  <div
+                    data-testid="pause-graphics-settings"
+                    className="p-3 rounded-xl bg-[#1b1729] border border-[#2a233d] grid grid-cols-1 gap-2"
+                  >
+                    <button
+                      type="button"
+                      data-testid="graphics-standard-btn"
+                      onClick={() => {
+                        setGraphicsQuality('high');
+                        worldRef.current?.setGraphicsQuality('high');
+                      }}
+                      className={`py-2.5 px-3 rounded-lg border text-xs font-bold transition-colors cursor-pointer ${
+                        graphicsQuality === 'high'
+                          ? 'bg-[#1e293b] border-[#38bdf8] text-[#bae6fd]'
+                          : 'bg-[#12101b] border-[#2a233d] text-[#94a3b8] hover:text-white'
+                      }`}
+                    >
+                      ✨ Высокая
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="graphics-simplified-btn"
+                      onClick={() => {
+                        setGraphicsQuality('medium');
+                        worldRef.current?.setGraphicsQuality('medium');
+                      }}
+                      className={`py-2.5 px-3 rounded-lg border text-xs font-bold transition-colors cursor-pointer ${
+                        graphicsQuality === 'medium'
+                          ? 'bg-[#2a1f10] border-[#f59e0b] text-[#fde047]'
+                          : 'bg-[#12101b] border-[#2a233d] text-[#94a3b8] hover:text-white'
+                      }`}
+                    >
+                      ⚡ Средняя (FPS+)
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="graphics-ultralow-btn"
+                      onClick={() => {
+                        setGraphicsQuality('ultralow');
+                        worldRef.current?.setGraphicsQuality('ultralow');
+                      }}
+                      className={`py-2.5 px-3 rounded-lg border text-xs font-bold transition-colors cursor-pointer ${
+                        graphicsQuality === 'ultralow'
+                          ? 'bg-[#132a1f] border-[#22c55e] text-[#bbf7d0]'
+                          : 'bg-[#12101b] border-[#2a233d] text-[#94a3b8] hover:text-white'
+                      }`}
+                    >
+                      🚀 Мин. (Макс FPS)
+                    </button>
+                  </div>
+                )}
 
-            {/* GRAPHICS SETTINGS (3 Tiers: High / Simplified / Ultralow Max FPS) */}
-            <div
-              data-testid="pause-graphics-settings"
-              className="p-3.5 rounded-xl bg-[#1b1729] border border-[#2a233d] text-left space-y-2"
-            >
-              <div className="text-xs font-bold uppercase tracking-wider text-[#e2d9f3]">
-                🖥️ Настройка графики (влияет на FPS)
-              </div>
-              <div className="grid grid-cols-3 gap-1.5">
-                <button
-                  type="button"
-                  data-testid="graphics-standard-btn"
-                  onClick={() => {
-                    setGraphicsQuality('high');
-                    worldRef.current?.setGraphicsQuality('high');
-                  }}
-                  className={`py-2 px-2 rounded-lg border text-[11px] font-bold transition-colors cursor-pointer ${
-                    graphicsQuality === 'high'
-                      ? 'bg-[#1e293b] border-[#38bdf8] text-[#bae6fd]'
-                      : 'bg-[#12101b] border-[#2a233d] text-[#94a3b8] hover:text-white'
-                  }`}
-                >
-                  ✨ Высокая
-                </button>
-                <button
-                  type="button"
-                  data-testid="graphics-simplified-btn"
-                  onClick={() => {
-                    setGraphicsQuality('medium');
-                    worldRef.current?.setGraphicsQuality('medium');
-                  }}
-                  className={`py-2 px-2 rounded-lg border text-[11px] font-bold transition-colors cursor-pointer ${
-                    graphicsQuality === 'medium'
-                      ? 'bg-[#2a1f10] border-[#f59e0b] text-[#fde047]'
-                      : 'bg-[#12101b] border-[#2a233d] text-[#94a3b8] hover:text-white'
-                  }`}
-                >
-                  ⚡ Средняя (FPS+)
-                </button>
-                <button
-                  type="button"
-                  data-testid="graphics-ultralow-btn"
-                  onClick={() => {
-                    setGraphicsQuality('ultralow');
-                    worldRef.current?.setGraphicsQuality('ultralow');
-                  }}
-                  className={`py-2 px-2 rounded-lg border text-[11px] font-bold transition-colors cursor-pointer ${
-                    graphicsQuality === 'ultralow'
-                      ? 'bg-[#132a1f] border-[#22c55e] text-[#bbf7d0]'
-                      : 'bg-[#12101b] border-[#2a233d] text-[#94a3b8] hover:text-white'
-                  }`}
-                >
-                  🚀 Мин. (Макс FPS)
-                </button>
-              </div>
-            </div>
+                {pauseSubmenu === 'controls' && (
+                  <div
+                    data-testid="pause-control-scheme-settings"
+                    className="p-3 rounded-xl bg-[#1b1729] border border-[#2a233d] grid grid-cols-1 gap-2"
+                  >
+                    <button
+                      type="button"
+                      data-testid="control-scheme-alternative-btn"
+                      onClick={() => handleSelectControlScheme('alternative')}
+                      className={`py-2.5 px-3 rounded-lg border text-xs font-bold transition-colors cursor-pointer ${
+                        controlScheme === 'alternative'
+                          ? 'bg-[#132a1f] border-[#22c55e] text-[#bbf7d0]'
+                          : 'bg-[#12101b] border-[#2a233d] text-[#94a3b8] hover:text-white'
+                      }`}
+                    >
+                      ⚡ Основное (Лёгкое)
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="control-scheme-classic-btn"
+                      onClick={() => handleSelectControlScheme('classic')}
+                      className={`py-2.5 px-3 rounded-lg border text-xs font-bold transition-colors cursor-pointer ${
+                        controlScheme === 'classic'
+                          ? 'bg-[#2a1f10] border-[#f59e0b] text-[#fde047]'
+                          : 'bg-[#12101b] border-[#2a233d] text-[#94a3b8] hover:text-white'
+                      }`}
+                    >
+                      🪄 Классическое
+                    </button>
+                  </div>
+                )}
 
-            {/* CO-OP MODE & CONNECTED MAGES IN PAUSE SETTINGS (Moved from HUD & Grimoire tab) */}
-            <div
-              data-testid="pause-coop-settings"
-              className="p-3.5 rounded-xl bg-[#1b1729] border border-[#2a233d] text-left space-y-2"
-            >
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-bold uppercase tracking-wider text-[#e2d9f3]">
-                  🌐 Режим Коопа и Маги
-                </span>
-                <span className="font-mono-num text-[#4ade80] font-bold">
-                  {pvpRoom
-                    ? `Код: ${pvpRoom} | Игроков: ${remotePlayers.length + 1}`
-                    : `Игроков: ${remotePlayers.length + 1}`}
-                </span>
-              </div>
-              <button
-                type="button"
-                data-testid="pause-coop-mode-toggle-btn"
-                onClick={() => {
-                  const nextMode: LabyrinthMultiplayerMode =
-                    labyrinthMultiplayerMode === 'shared' ? 'parallel' : 'shared';
-                  handleSelectLabyrinthMultiplayerMode(nextMode);
-                }}
-                className={`w-full px-3 py-2 rounded-lg border text-xs font-mono-num flex items-center justify-between transition-colors cursor-pointer ${
-                  labyrinthMultiplayerMode === 'shared'
-                    ? 'bg-[#132a1f] border-[#22c55e] text-[#bbf7d0]'
-                    : 'bg-[#1f1633] border-[#a855f7] text-[#e9d5ff]'
-                }`}
-              >
-                <span className="font-bold">
-                  {labyrinthMultiplayerMode === 'shared'
-                    ? '🤝 Общие враги и Босс (Кооп)'
-                    : '🌀 Свои миры + PvP'}
-                </span>
-                <span className="text-[11px] opacity-90">Сменить ⇄</span>
-              </button>
-            </div>
+                {pauseSubmenu === 'coop' && (
+                  <div
+                    data-testid="pause-coop-settings"
+                    className="p-3.5 rounded-xl bg-[#1b1729] border border-[#2a233d] space-y-2.5 text-left"
+                  >
+                    <div className="flex items-center justify-between text-xs font-mono-num text-[#4ade80] font-bold">
+                      <span>{pvpRoom ? `Код комнаты: ${pvpRoom}` : 'Одиночная игра'}</span>
+                      <span>Игроков: {remotePlayers.length + 1}</span>
+                    </div>
+                    <button
+                      type="button"
+                      data-testid="pause-coop-mode-toggle-btn"
+                      onClick={() => {
+                        const nextMode: LabyrinthMultiplayerMode =
+                          labyrinthMultiplayerMode === 'shared' ? 'parallel' : 'shared';
+                        handleSelectLabyrinthMultiplayerMode(nextMode);
+                      }}
+                      className={`w-full px-3 py-2.5 rounded-lg border text-xs font-mono-num flex items-center justify-between transition-colors cursor-pointer ${
+                        labyrinthMultiplayerMode === 'shared'
+                          ? 'bg-[#132a1f] border-[#22c55e] text-[#bbf7d0]'
+                          : 'bg-[#1f1633] border-[#a855f7] text-[#e9d5ff]'
+                      }`}
+                    >
+                      <span className="font-bold">
+                        {labyrinthMultiplayerMode === 'shared'
+                          ? '🤝 Общие враги'
+                          : '🌀 Свои миры'}
+                      </span>
+                      <span className="text-[11px] opacity-90">⇄</span>
+                    </button>
+                  </div>
+                )}
 
-            <div className="flex flex-col gap-2.5">
-              <button
-                type="button"
-                onClick={handleTogglePause}
-                className="w-full py-3 text-sm font-bold bg-[#f59e0b] hover:bg-[#fbbf24] text-[#09080d] rounded-lg transition-colors cursor-pointer"
-              >
-                Продолжить [Esc]
-              </button>
-              <button
-                type="button"
-                data-testid="pause-fullscreen-btn"
-                onClick={toggleFullscreen}
-                className={`w-full py-2.5 text-xs font-bold rounded-lg border transition-colors cursor-pointer ${
-                  isFullscreen
-                    ? 'bg-[#132a1f] border-[#22c55e] text-[#bbf7d0] hover:bg-[#173628]'
-                    : 'bg-[#132638] border-[#38bdf8] text-[#bae6fd] hover:bg-[#1a344c]'
-                }`}
-              >
-                {isFullscreen
-                  ? '⛶ Полный экран [F11]: ВКЛ (Выйти)'
-                  : '⛶ Полный экран [F11]'}
-              </button>
-              <button
-                type="button"
-                data-testid="pause-account-btn"
-                onClick={() => setAccountModalOpen(true)}
-                className="w-full py-2.5 text-xs font-bold bg-[#251f38] hover:bg-[#332a4d] border border-[#a855f7] text-[#e9d5ff] rounded-lg transition-colors cursor-pointer"
-              >
-                👤 Персонаж, Аккаунт, Уровни (1–5) и Сложность
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  const next = hud.mapMode === 'labyrinth' ? 'arena' : 'labyrinth';
-                  handleStartGameWithMode(next);
-                }}
-                className="w-full py-2.5 text-xs font-semibold bg-[#1e293b] hover:bg-[#334155] text-[#7dd3fc] rounded-lg transition-colors cursor-pointer"
-              >
-                {hud.mapMode === 'labyrinth'
-                  ? 'Перейти на Полигон / PvP Арену'
-                  : 'Перейти в Лабиринт (5 Уровней)'}
-              </button>
-              <button
-                type="button"
-                onClick={handleRestartGame}
-                className="w-full py-2.5 text-xs font-semibold bg-[#231e36] hover:bg-[#312a4a] text-white rounded-lg transition-colors cursor-pointer"
-              >
-                Начать Заново
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  worldRef.current?.setMode('title');
-                  setGameState('title');
-                }}
-                className="w-full py-2.5 text-xs font-semibold bg-[#181524] hover:bg-[#231e36] text-[#cbd5e1] rounded-lg transition-colors cursor-pointer"
-              >
-                На Главный Экран
-              </button>
-            </div>
+                <button
+                  type="button"
+                  data-testid="pause-submenu-back-btn"
+                  onClick={() => setPauseSubmenu('main')}
+                  className="w-full py-2.5 text-xs font-bold bg-[#231e36] hover:bg-[#312a4a] text-[#fde047] rounded-lg transition-colors cursor-pointer"
+                >
+                  ← Назад
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
