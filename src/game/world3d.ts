@@ -956,6 +956,9 @@ export class ArcaneWorldEngine {
     string,
     {
       group: THREE.Group;
+      bodyGroup: THREE.Group;
+      isDetailed: boolean;
+      staffId: string;
       shield: THREE.Mesh;
       hpBarCanvas: HTMLCanvasElement;
       hpBarTexture: THREE.CanvasTexture;
@@ -1172,6 +1175,20 @@ export class ArcaneWorldEngine {
       this.torchLightPool[i].intensity = 0;
     }
 
+    if (this.remoteMeshes.size > 0) {
+      const wantDetailed = quality === 'high';
+      for (const entry of this.remoteMeshes.values()) {
+        if (entry.isDetailed !== wantDetailed) {
+          entry.group.remove(entry.bodyGroup);
+          this.disposeHierarchy(entry.bodyGroup);
+          const nextBody = this.createRemoteWizardMesh(entry.staffId, wantDetailed);
+          entry.group.add(nextBody);
+          entry.bodyGroup = nextBody;
+          entry.isDetailed = wantDetailed;
+        }
+      }
+    }
+
     this.applyAtmosphereForMapMode();
     this.camera.updateProjectionMatrix();
     this.renderer.shadowMap.needsUpdate = true;
@@ -1313,6 +1330,7 @@ export class ArcaneWorldEngine {
   }
 
   public loadMapMode(targetMode: GameMapMode, stage: LabyrinthStageId = 1, preserveChosenPet = false) {
+    audioEngine.setCampfireLoop(false);
     this.mapMode = targetMode;
     this.labyrinthStage = stage;
 
@@ -1952,7 +1970,6 @@ export class ArcaneWorldEngine {
     };
     this.snowPatches.push(patch);
     this.spawnParticles(_v1.copy(pos).setY(0.5), 0xe0f2fe, 32, 6.5);
-    audioEngine.playPickupChime();
     return patch;
   }
 
@@ -5214,7 +5231,6 @@ export class ArcaneWorldEngine {
     };
     this.campfires.push(actor);
     this.spawnParticles(_v1.copy(pos).setY(0.4), 0xd97706, 14, 3.5);
-    audioEngine.playPickupChime();
     if (!fromRemote) {
       this.emitWorldEvent({
         kind: 'campfire_place',
@@ -5246,6 +5262,13 @@ export class ArcaneWorldEngine {
     this.spawnParticles(firePos, 0xf97316, 32, 6.5);
     this.spawnParticles(firePos, 0xfde047, 18, 4.5);
     audioEngine.playVictoryFanfare();
+    const distToPlayer = Math.hypot(
+      campfire.position.x - this.playerPos.x,
+      campfire.position.z - this.playerPos.z
+    );
+    if (distToPlayer <= CAMPFIRE_HEAL_RADIUS + 2.0) {
+      audioEngine.setCampfireLoop(true, true);
+    }
     if (!fromRemote) {
       this.emitWorldEvent({
         kind: 'campfire_light',
@@ -5407,7 +5430,7 @@ export class ArcaneWorldEngine {
     this.builtWalls.push(wallActor);
     this.spawnParticles(_v1.copy(pos).setY(0.5), 0xd97706, 18, 4.2);
     if (!customId) {
-      audioEngine.playPickupChime();
+      audioEngine.playWallSound('build');
       this.callbacks.onQuestEvent('build_wall', 1);
       this.emitWorldEvent({
         kind: 'wall_place',
@@ -5559,7 +5582,7 @@ export class ArcaneWorldEngine {
     this.worldContentGroup.remove(removed.mesh);
     this.spawnParticles(_v1.copy(removed.position).setY(1.1), 0xd97706, 24, 5.5);
     this.spawnParticles(_v1.copy(removed.position).setY(1.1), 0x94a3b8, 12, 4.0);
-    audioEngine.playHeavyImpact(false);
+    audioEngine.playWallSound('dismantle');
     this.callbacks.onQuestEvent('dismantle_wall', 1);
     this.emitWorldEvent({
       kind: 'wall_dismantle',
@@ -8976,6 +8999,8 @@ export class ArcaneWorldEngine {
     this.keysJustPressed.clear();
     if (newMode === 'playing') {
       this.camera.rotation.set(0, 0, 0, 'YXZ');
+    } else {
+      audioEngine.setCampfireLoop(false);
     }
   }
 
@@ -9611,7 +9636,6 @@ export class ArcaneWorldEngine {
         this.playerRegenTimer = 4.0;
       }
       this.spawnParticles(_v2.copy(this.playerPos).setY(1.2), 0x22c55e, 28, 5.5);
-      audioEngine.playPickupChime();
       this.callbacks.onQuestEvent('transfigure', 1);
 
       let healedAllyName: string | null = null;
@@ -10885,7 +10909,7 @@ export class ArcaneWorldEngine {
       if (node.cooldown <= 0 && node.position.distanceTo(this.playerPos) < 4.8) {
         node.cooldown = HARVEST_NODE_RESPAWN_SEC; // 60.0 seconds (1 minute)
         node.mesh.visible = false;
-        audioEngine.playPickupChime();
+        audioEngine.playHarvestSound(node.reagentId);
         this.spawnParticles(
           _v1.copy(node.position).setY(1.2),
           REAGENTS[node.reagentId].color,
@@ -10911,6 +10935,10 @@ export class ArcaneWorldEngine {
     return false;
   }
 
+  private createRemoteWizardMesh(staffId: string, detailed: boolean): THREE.Group {
+    return buildRemoteWizardMesh(staffId, detailed);
+  }
+
   public syncRemotePlayers(players: RemotePlayerState[], selfId: string) {
     const activeIds = new Set<string>();
 
@@ -10923,36 +10951,8 @@ export class ArcaneWorldEngine {
         const group = new THREE.Group();
         this.addContactShadow(group, 0.9);
 
-        const robeMat = new THREE.MeshStandardMaterial({
-          color: 0x1d4ed8,
-          roughness: 0.7,
-          metalness: 0.2,
-          flatShading: true,
-        });
-        const trimMat = new THREE.MeshStandardMaterial({
-          color: 0x38bdf8,
-          emissive: 0x0284c7,
-          emissiveIntensity: 0.45,
-          roughness: 0.3,
-          flatShading: true,
-        });
-        const goldMat = new THREE.MeshStandardMaterial({
-          color: 0xf59e0b,
-          roughness: 0.3,
-          metalness: 0.85,
-          flatShading: true,
-        });
-
-        const body = new THREE.Mesh(new THREE.ConeGeometry(0.7, 1.9, 8), robeMat);
-        body.position.y = 0.95;
-        const mantle = new THREE.Mesh(new THREE.ConeGeometry(0.56, 0.48, 6), trimMat);
-        mantle.position.y = 1.65;
-        const head = new THREE.Mesh(new THREE.SphereGeometry(0.32, 12, 12), goldMat);
-        head.position.y = 2.05;
-        const hatBrim = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.66, 0.06, 8), robeMat);
-        hatBrim.position.y = 2.28;
-        const hat = new THREE.Mesh(new THREE.ConeGeometry(0.42, 0.75, 8), robeMat);
-        hat.position.y = 2.62;
+        const detailed = this.graphicsQuality === 'high';
+        const bodyGroup = this.createRemoteWizardMesh(p.staffId, detailed);
 
         const shieldGeo = new THREE.SphereGeometry(1.35, 16, 16);
         const shieldMat = new THREE.MeshBasicMaterial({
@@ -10988,10 +10988,26 @@ export class ArcaneWorldEngine {
         sprite.scale.set(2.9, 0.68, 1);
         sprite.position.set(0, 3.35, 0);
 
-        group.add(body, mantle, head, hatBrim, hat, shield, sprite);
+        group.add(bodyGroup, shield, sprite);
         this.scene.add(group);
-        entry = { group, shield, hpBarCanvas, hpBarTexture, data: p };
+        entry = {
+          group,
+          bodyGroup,
+          isDetailed: detailed,
+          staffId: p.staffId,
+          shield,
+          hpBarCanvas,
+          hpBarTexture,
+          data: p,
+        };
         this.remoteMeshes.set(p.id, entry);
+      } else if (entry.isDetailed && entry.staffId !== p.staffId) {
+        entry.group.remove(entry.bodyGroup);
+        this.disposeHierarchy(entry.bodyGroup);
+        const nextBody = this.createRemoteWizardMesh(p.staffId, true);
+        entry.group.add(nextBody);
+        entry.bodyGroup = nextBody;
+        entry.staffId = p.staffId;
       }
 
       if (entry.data.hp !== p.hp || entry.data.maxHp !== p.maxHp || entry.data.name !== p.name) {
@@ -11013,6 +11029,7 @@ export class ArcaneWorldEngine {
     for (const [id, entry] of this.remoteMeshes.entries()) {
       if (!activeIds.has(id)) {
         this.scene.remove(entry.group);
+        this.disposeHierarchy(entry.group);
         this.remoteMeshes.delete(id);
       }
     }
@@ -11044,7 +11061,7 @@ export class ArcaneWorldEngine {
     this.hp = Math.min(this.maxHp, this.hp + Math.max(1, Math.round(healAmount)));
     const gained = Math.max(0, Math.round(this.hp - prevHp));
     this.spawnParticles(_v2.copy(this.playerPos).setY(1.2), 0x22c55e, 28, 5.5);
-    audioEngine.playPickupChime();
+    audioEngine.playSpellCast('vera_verto', 75);
     this.lastCastBanner = {
       spellName: `💚 ${healerName ? `«${healerName}»` : 'Союзник'} исцелил вас: +${
         gained > 0 ? gained : Math.round(healAmount)
@@ -11371,7 +11388,6 @@ export class ArcaneWorldEngine {
           this.camera.position.set(this.playerPos.x, 1.72, this.playerPos.z);
           this.spawnParticles(_v2.copy(this.playerPos).setY(1.0), 0xf97316, 36, 8.0);
           this.spawnParticles(_v2.copy(this.playerPos).setY(1.0), 0xfacc15, 22, 6.0);
-          audioEngine.playPickupChime();
           this.callbacks.onQuestEvent('cast_teleport', 1);
           this.lastCastBanner = {
             spellName: `🏠 Вы вернулись Домой к Костру! (КД ${Math.round(cdToApply)}с)`,
@@ -11403,7 +11419,6 @@ export class ArcaneWorldEngine {
           wall.isBuilt = true;
           wall.bodyGroup.scale.set(1, 1, 1);
           this.spawnParticles(_v1.copy(wall.position).setY(1.4), 0xfde047, 22, 5.2);
-          audioEngine.playPickupChime();
           this.lastCastBanner = {
             spellName: `🧱 Стена построена! (${this.builtWalls.length}/${MAX_BUILT_WALLS})`,
             qualityPercent: 100,
@@ -11502,6 +11517,8 @@ export class ArcaneWorldEngine {
         }
       }
     }
+
+    audioEngine.setCampfireLoop(inLitCampfireAura, false);
 
     const campfireRegen = getCampfireEffectiveRegen(activeCampfireSheltered);
     if (inLitCampfireAura) {
@@ -12626,7 +12643,7 @@ export class ArcaneWorldEngine {
         enemy.burnTickAccum += dt;
         if (enemy.burnTickAccum >= 1.0) {
           enemy.burnTickAccum -= 1.0;
-          this.damageEnemy(enemy, 14, new THREE.Vector3(), 0xf97316, false, 'incendio', false, false);
+          this.damageEnemy(enemy, 14, new THREE.Vector3(), 0xf97316, false, 'incendio', false, false, true);
           if ((enemy.state as string) === 'ko') continue;
         }
       } else {
@@ -14324,7 +14341,8 @@ export class ArcaneWorldEngine {
     fromRemote = false,
     spellId = 'incendio',
     isPetAttack = false,
-    isDirectPlayerHit = true
+    isDirectPlayerHit = true,
+    isBurnTick = false
   ) {
     if (enemy.state === 'ko' || enemy.hp <= 0) return;
     // Worm Boss & Mud Monster cannot be hit while burrowed underground ("исчезает под текстуры его нельзя бить")!
@@ -14503,8 +14521,10 @@ export class ArcaneWorldEngine {
     );
     if (isPetAttack) {
       audioEngine.playPetImpact(isKill);
+    } else if (isBurnTick || (!isDirectPlayerHit && spellId === 'incendio')) {
+      audioEngine.playFireBurnTick();
     } else {
-      audioEngine.playHeavyImpact(isKill);
+      audioEngine.playHeavyImpact(isKill, spellId);
     }
 
     if (isKill) {
@@ -15329,6 +15349,7 @@ export class ArcaneWorldEngine {
 
   public dispose() {
     this.disposed = true;
+    audioEngine.setCampfireLoop(false);
     cancelAnimationFrame(this.frameId);
     clearTimeout(this.frameId);
     window.removeEventListener('keydown', this.onKeyDown);
@@ -15348,9 +15369,369 @@ export class ArcaneWorldEngine {
       entry.material.dispose();
     }
     this.floatingDamageNumbers = [];
+    for (const entry of this.remoteMeshes.values()) {
+      this.scene.remove(entry.group);
+      this.disposeHierarchy(entry.group);
+    }
+    this.remoteMeshes.clear();
     this.renderer.dispose();
     if (this.renderer.domElement.parentNode) {
       this.renderer.domElement.parentNode.removeChild(this.renderer.domElement);
     }
   }
+}
+
+/**
+ * Builds the 3D body mesh for remote co-op / PvP wizards ONLY (never used for the local first-person player).
+ * - `detailed === false` ('medium' / 'ultralow'): lightweight 5-mesh silhouette for maximum FPS.
+ * - `detailed === true` ('high'): articulated low-poly faceted Heroic Allied Wizard (~650 triangles).
+ * Orientation follows world3d yaw convention: -Z is forward, +X is character's right (wand/staff), -X is left (casting hand).
+ */
+export function buildRemoteWizardMesh(staffId: string, detailed: boolean): THREE.Group {
+  const root = new THREE.Group();
+
+  if (!detailed) {
+    const robeMat = new THREE.MeshStandardMaterial({
+      color: 0x1d4ed8,
+      roughness: 0.7,
+      metalness: 0.2,
+      flatShading: true,
+    });
+    const trimMat = new THREE.MeshStandardMaterial({
+      color: 0x38bdf8,
+      emissive: 0x0284c7,
+      emissiveIntensity: 0.45,
+      roughness: 0.3,
+      flatShading: true,
+    });
+    const goldMat = new THREE.MeshStandardMaterial({
+      color: 0xf59e0b,
+      roughness: 0.3,
+      metalness: 0.85,
+      flatShading: true,
+    });
+
+    const body = new THREE.Mesh(new THREE.ConeGeometry(0.7, 1.9, 8), robeMat);
+    body.position.y = 0.95;
+    const mantle = new THREE.Mesh(new THREE.ConeGeometry(0.56, 0.48, 6), trimMat);
+    mantle.position.y = 1.65;
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.32, 12, 12), goldMat);
+    head.position.y = 2.05;
+    const hatBrim = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.66, 0.06, 8), robeMat);
+    hatBrim.position.y = 2.28;
+    const hat = new THREE.Mesh(new THREE.ConeGeometry(0.42, 0.75, 8), robeMat);
+    hat.position.y = 2.62;
+
+    root.add(body, mantle, head, hatBrim, hat);
+    return root;
+  }
+
+  // Detailed low-poly faceted Heroic Allied Wizard (< 800 triangles)
+  const staffDef = EQUIPMENT_CATALOG[staffId as EquipmentId];
+  const staffGemColor = staffDef?.gemColor || '#38bdf8';
+  const staffWoodColor = staffDef?.primaryColor || '#78350f';
+
+  const robeMat = new THREE.MeshStandardMaterial({
+    color: 0x312e81,
+    roughness: 0.78,
+    metalness: 0.08,
+    flatShading: true,
+  });
+  const innerRobeMat = new THREE.MeshStandardMaterial({
+    color: 0x1e1b4b,
+    roughness: 0.85,
+    metalness: 0.05,
+    flatShading: true,
+  });
+  const mantleMat = new THREE.MeshStandardMaterial({
+    color: 0x3730a3,
+    roughness: 0.74,
+    metalness: 0.1,
+    side: THREE.DoubleSide,
+    flatShading: true,
+  });
+  const goldMat = new THREE.MeshStandardMaterial({
+    color: 0xf59e0b,
+    emissive: 0xb45309,
+    emissiveIntensity: 0.25,
+    roughness: 0.28,
+    metalness: 0.82,
+    flatShading: true,
+  });
+  const steelMat = new THREE.MeshStandardMaterial({
+    color: 0x94a3b8,
+    roughness: 0.34,
+    metalness: 0.78,
+    flatShading: true,
+  });
+  const leatherMat = new THREE.MeshStandardMaterial({
+    color: 0x6b3e1e,
+    roughness: 0.75,
+    metalness: 0.08,
+    flatShading: true,
+  });
+  const bootMat = new THREE.MeshStandardMaterial({
+    color: 0x1e2028,
+    roughness: 0.84,
+    metalness: 0.12,
+    flatShading: true,
+  });
+  const hoodMat = new THREE.MeshStandardMaterial({
+    color: 0x475569,
+    roughness: 0.8,
+    metalness: 0.12,
+    flatShading: true,
+  });
+  const skinMat = new THREE.MeshStandardMaterial({
+    color: 0xd6a584,
+    roughness: 0.72,
+    metalness: 0.04,
+    flatShading: true,
+  });
+  const cyanGlowMat = new THREE.MeshStandardMaterial({
+    color: 0x38bdf8,
+    emissive: 0x38bdf8,
+    emissiveIntensity: 1.9,
+    roughness: 0.14,
+    metalness: 0.2,
+    flatShading: true,
+  });
+  const potionMat = new THREE.MeshStandardMaterial({
+    color: 0xdc2626,
+    emissive: 0x991b1b,
+    emissiveIntensity: 0.6,
+    roughness: 0.18,
+    metalness: 0.15,
+    flatShading: true,
+  });
+  const woodMat = new THREE.MeshStandardMaterial({
+    color: staffWoodColor,
+    roughness: 0.62,
+    metalness: 0.12,
+    flatShading: true,
+  });
+  const staffGemMat = new THREE.MeshStandardMaterial({
+    color: staffGemColor,
+    emissive: staffGemColor,
+    emissiveIntensity: 1.85,
+    roughness: 0.12,
+    metalness: 0.2,
+    flatShading: true,
+  });
+
+  // 1. Wide-stance dark boots & legs (grounded flush at y = 0)
+  for (const side of [-1, 1]) {
+    const boot = new THREE.Mesh(new THREE.BoxGeometry(0.23, 0.22, 0.4), bootMat);
+    boot.position.set(side * 0.26, 0.11, -0.08);
+    boot.rotation.y = -side * 0.18;
+    root.add(boot);
+
+    const shin = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.1, 0.44, 6, 1, true), bootMat);
+    shin.position.set(side * 0.25, 0.38, -0.02);
+    root.add(shin);
+  }
+
+  // 2. Flared royal indigo-blue robe with gold bottom trim & flush front split panels
+  const robeSkirt = new THREE.Mesh(new THREE.CylinderGeometry(0.36, 0.6, 1.0, 8, 1, false), robeMat);
+  robeSkirt.position.y = 0.68;
+  root.add(robeSkirt);
+
+  const robeGoldHem = new THREE.Mesh(new THREE.CylinderGeometry(0.57, 0.625, 0.12, 8, 1, true), goldMat);
+  robeGoldHem.position.y = 0.23;
+  root.add(robeGoldHem);
+
+  // Positive X rotation tilts top (+Z) inward toward waist and bottom (-Z) outward to hug the flared skirt!
+  const innerFrontPanel = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.94, 0.06), innerRobeMat);
+  innerFrontPanel.position.set(0, 0.66, -0.455);
+  innerFrontPanel.rotation.x = 0.23;
+  root.add(innerFrontPanel);
+
+  for (const side of [-1, 1]) {
+    const frontTrim = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.96, 0.055), goldMat);
+    frontTrim.position.set(side * 0.15, 0.66, -0.465);
+    frontTrim.rotation.x = 0.23;
+    root.add(frontTrim);
+  }
+
+  const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.33, 0.64, 6, 1, false), robeMat);
+  torso.position.y = 1.46;
+  root.add(torso);
+
+  for (const side of [-1, 1]) {
+    const chestTrim = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.54, 0.05), goldMat);
+    chestTrim.position.set(side * 0.115, 1.47, -0.34);
+    root.add(chestTrim);
+  }
+
+  // 3. Brown leather belt, glowing cyan rune buckle, tiny red potion vial (left hip) & pouch (right hip)
+  const belt = new THREE.Mesh(new THREE.CylinderGeometry(0.375, 0.385, 0.16, 8, 1, true), leatherMat);
+  belt.position.y = 1.15;
+  root.add(belt);
+
+  const buckleFrame = new THREE.Mesh(new THREE.OctahedronGeometry(0.145, 0), steelMat);
+  buckleFrame.scale.set(1.05, 1.15, 0.42);
+  buckleFrame.position.set(0, 1.15, -0.39);
+  root.add(buckleFrame);
+
+  const buckleRune = new THREE.Mesh(new THREE.OctahedronGeometry(0.102, 0), cyanGlowMat);
+  buckleRune.scale.set(0.95, 1.05, 0.48);
+  buckleRune.position.set(0, 1.15, -0.415);
+  root.add(buckleRune);
+
+  const potionBulb = new THREE.Mesh(new THREE.OctahedronGeometry(0.092, 0), potionMat);
+  potionBulb.position.set(-0.42, 0.95, -0.1);
+  root.add(potionBulb);
+
+  const potionNeck = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.04, 0.08, 6, 1, true), steelMat);
+  potionNeck.position.set(-0.42, 1.045, -0.1);
+  root.add(potionNeck);
+
+  const hipPouch = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.17, 0.11), leatherMat);
+  hipPouch.position.set(0.42, 0.97, -0.06);
+  root.add(hipPouch);
+
+  // 4. Layered shoulder mantle, open-front high collar, clasps & steel-grey pauldrons
+  const mantle = new THREE.Mesh(new THREE.CylinderGeometry(0.37, 0.49, 0.28, 8, 1, false), mantleMat);
+  mantle.position.y = 1.66;
+  root.add(mantle);
+
+  const mantleGoldTrim = new THREE.Mesh(new THREE.CylinderGeometry(0.47, 0.51, 0.05, 8, 1, true), goldMat);
+  mantleGoldTrim.position.y = 1.53;
+  root.add(mantleGoldTrim);
+
+  // Open-front high collar arc (wraps back + sides of neck, leaving front -Z face unobstructed!)
+  const highCollar = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.32, 0.26, 0.24, 7, 1, true, -Math.PI * 0.62, Math.PI * 1.24),
+    mantleMat
+  );
+  highCollar.position.set(0, 1.88, 0.02);
+  root.add(highCollar);
+
+  for (const side of [-1, 1]) {
+    const clasp = new THREE.Mesh(new THREE.OctahedronGeometry(0.04, 0), goldMat);
+    clasp.position.set(side * 0.11, 1.74, -0.36);
+    root.add(clasp);
+
+    const pauldronTop = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.13, 0.34), steelMat);
+    pauldronTop.position.set(side * 0.44, 1.78, 0);
+    pauldronTop.rotation.z = -side * 0.32;
+    root.add(pauldronTop);
+
+    const pauldronLower = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.11, 0.29), steelMat);
+    pauldronLower.position.set(side * 0.52, 1.66, 0);
+    pauldronLower.rotation.z = -side * 0.52;
+    root.add(pauldronLower);
+  }
+
+  // 5. Hooded head, glowing cyan eyes & pointed indigo wizard hat with wide brim and gold band
+  const hood = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.24, 0.34, 6, 1, false), hoodMat);
+  hood.position.set(0, 2.0, 0.05);
+  hood.rotation.y = Math.PI / 6;
+  root.add(hood);
+
+  const face = new THREE.Mesh(new THREE.BoxGeometry(0.23, 0.29, 0.22), skinMat);
+  face.position.set(0, 1.99, -0.095);
+  root.add(face);
+
+  for (const side of [-1, 1]) {
+    const eye = new THREE.Mesh(new THREE.BoxGeometry(0.072, 0.036, 0.03), cyanGlowMat);
+    eye.position.set(side * 0.06, 2.06, -0.208);
+    eye.rotation.z = side * 0.14;
+    root.add(eye);
+  }
+
+  const hatBrim = new THREE.Mesh(new THREE.ConeGeometry(0.68, 0.14, 8), robeMat);
+  hatBrim.position.y = 2.25;
+  root.add(hatBrim);
+
+  const hatBrimTrim = new THREE.Mesh(new THREE.CylinderGeometry(0.66, 0.69, 0.03, 8, 1, true), goldMat);
+  hatBrimTrim.position.y = 2.19;
+  root.add(hatBrimTrim);
+
+  const hatGoldBand = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.29, 0.13, 8, 1, true), goldMat);
+  hatGoldBand.position.y = 2.35;
+  root.add(hatGoldBand);
+
+  const hatCrown = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.24, 0.29, 6, 1, true), robeMat);
+  hatCrown.position.set(0, 2.54, 0.03);
+  hatCrown.rotation.x = 0.15;
+  root.add(hatCrown);
+
+  const hatTip = new THREE.Mesh(new THREE.ConeGeometry(0.155, 0.36, 6), robeMat);
+  hatTip.position.set(0, 2.76, 0.16);
+  hatTip.rotation.x = 0.68;
+  root.add(hatTip);
+
+  // 6. Left casting arm (-X) with steel wrist bracer & glowing cyan ring gem
+  const leftSleeve = new THREE.Mesh(new THREE.CylinderGeometry(0.125, 0.135, 0.33, 6, 1, true), robeMat);
+  leftSleeve.position.set(-0.56, 1.48, -0.05);
+  leftSleeve.rotation.z = -0.42;
+  root.add(leftSleeve);
+
+  const leftCuff = new THREE.Mesh(new THREE.CylinderGeometry(0.132, 0.122, 0.045, 6, 1, true), goldMat);
+  leftCuff.position.set(-0.62, 1.35, -0.07);
+  leftCuff.rotation.z = -0.38;
+  root.add(leftCuff);
+
+  const leftBracer = new THREE.Mesh(new THREE.CylinderGeometry(0.105, 0.088, 0.27, 6, 1, true), steelMat);
+  leftBracer.position.set(-0.68, 1.22, -0.11);
+  leftBracer.rotation.set(-0.25, 0, -0.3);
+  root.add(leftBracer);
+
+  const leftHand = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.15, 0.105), skinMat);
+  leftHand.position.set(-0.74, 1.05, -0.16);
+  root.add(leftHand);
+
+  const leftRingGem = new THREE.Mesh(new THREE.OctahedronGeometry(0.042, 0), cyanGlowMat);
+  leftRingGem.position.set(-0.74, 1.05, -0.22);
+  root.add(leftRingGem);
+
+  // 7. Right arm (+X) with steel wrist bracer & carved wooden wand/staff
+  const rightSleeve = new THREE.Mesh(new THREE.CylinderGeometry(0.125, 0.135, 0.33, 6, 1, true), robeMat);
+  rightSleeve.position.set(0.56, 1.48, -0.06);
+  rightSleeve.rotation.z = 0.38;
+  root.add(rightSleeve);
+
+  const rightCuff = new THREE.Mesh(new THREE.CylinderGeometry(0.132, 0.122, 0.045, 6, 1, true), goldMat);
+  rightCuff.position.set(0.61, 1.36, -0.11);
+  rightCuff.rotation.z = 0.32;
+  root.add(rightCuff);
+
+  const rightBracer = new THREE.Mesh(new THREE.CylinderGeometry(0.105, 0.088, 0.27, 6, 1, true), steelMat);
+  rightBracer.position.set(0.65, 1.24, -0.2);
+  rightBracer.rotation.set(-0.58, 0, 0.22);
+  root.add(rightBracer);
+
+  const rightHand = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.13, 0.13), skinMat);
+  rightHand.position.set(0.68, 1.14, -0.33);
+  root.add(rightHand);
+
+  const staffGroup = new THREE.Group();
+  staffGroup.position.set(0.68, 1.14, -0.36);
+  staffGroup.rotation.set(-0.18, 0, -0.08);
+
+  const staffShaft = new THREE.Mesh(new THREE.CylinderGeometry(0.036, 0.044, 0.96, 6, 1, false), woodMat);
+  staffShaft.position.y = 0.18;
+  staffGroup.add(staffShaft);
+
+  const staffPommel = new THREE.Mesh(new THREE.CylinderGeometry(0.052, 0.052, 0.055, 6, 1, true), goldMat);
+  staffPommel.position.y = -0.28;
+  staffGroup.add(staffPommel);
+
+  const staffGripBand = new THREE.Mesh(new THREE.CylinderGeometry(0.052, 0.052, 0.055, 6, 1, true), goldMat);
+  staffGripBand.position.y = 0.2;
+  staffGroup.add(staffGripBand);
+
+  const staffSocket = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.042, 0.075, 6, 1, true), goldMat);
+  staffSocket.position.y = 0.65;
+  staffGroup.add(staffSocket);
+
+  const staffGem = new THREE.Mesh(new THREE.OctahedronGeometry(0.11, 0), staffGemMat);
+  staffGem.name = 'staff_crystal_gem';
+  staffGem.scale.set(0.85, 1.55, 0.85);
+  staffGem.position.y = 0.81;
+  staffGroup.add(staffGem);
+
+  root.add(staffGroup);
+  return root;
 }

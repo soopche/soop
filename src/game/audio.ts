@@ -2,8 +2,28 @@ import {
   ARCANE_SWORD_EXPIRING_SOUND_URL,
   ARCANE_SWORD_EXPIRING_VOLUME_SCALE,
   matchVoiceSpell,
+  ReagentId,
   SpellId,
 } from './spells';
+
+// STRICT FILE ORDER MAPPING (1 to 4):
+export const TREE_CHOP_SOUND_URL =
+  '/assets/aistudio/alexzavesa-boards-fall-1-468371__mp3cut.net__ce1023b3.mp3';
+export const HERB_PICK_SOUND_URL =
+  '/assets/aistudio/universfield-funny-cartoon-cry-144756__mp3cut.net__60580c85.mp3';
+export const CAMPFIRE_LOOP_SOUND_URL =
+  '/assets/aistudio/dragon-studio-fire-crackling-sounds-427410_cf6be12a.mp3';
+export const WALL_ACTION_SOUND_URL =
+  '/assets/aistudio/dragon-studio-falling-tree-356127_f4a3367d.mp3';
+
+type WorldSfxKey = 'tree_chop' | 'herb_pick' | 'campfire_loop' | 'wall_action';
+
+const WORLD_SFX_URLS: Record<WorldSfxKey, string> = {
+  tree_chop: TREE_CHOP_SOUND_URL,
+  herb_pick: HERB_PICK_SOUND_URL,
+  campfire_loop: CAMPFIRE_LOOP_SOUND_URL,
+  wall_action: WALL_ACTION_SOUND_URL,
+};
 
 const SPELL_SOUND_URLS: Record<SpellId, string> = {
   incendio: '/assets/aistudio/yodguard-fire-magic-6-378641_516418a9.mp3',
@@ -88,7 +108,7 @@ interface DecodedSpellSound {
   trimStartSec: number;
 }
 
-class ArcaneAudioEngine {
+export class ArcaneAudioEngine {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
   private rawSpellData: Partial<Record<SpellId, ArrayBuffer>> = {};
@@ -98,6 +118,14 @@ class ArcaneAudioEngine {
   private decodedSwordExpiringBuffer: DecodedSpellSound | null = null;
   private decodingSwordExpiringPromise: Promise<DecodedSpellSound | null> | null = null;
   private activeSwordExpiringSource: AudioBufferSourceNode | null = null;
+  private decodedWorldSfxBuffers: Partial<Record<WorldSfxKey, DecodedSpellSound>> = {};
+  private loadingWorldSfxPromises: Partial<Record<WorldSfxKey, Promise<DecodedSpellSound | null>>> =
+    {};
+  private worldSfxAttempted = new Set<WorldSfxKey>();
+  private campfireLoopActive = false;
+  private campfireLoopSource: AudioBufferSourceNode | null = null;
+  private campfireLoopGain: GainNode | null = null;
+  private campfireLoopGeneration = 0;
   public muted = false;
   public masterVolume = 0.85;
 
@@ -225,6 +253,54 @@ class ArcaneAudioEngine {
     return promise;
   }
 
+  /**
+   * Lazily fetches and decodes a world SFX asset ONCE, strips leading silence,
+   * and immediately discards the raw ArrayBuffer after decodeAudioData resolves so zero raw bytes remain in RAM.
+   */
+  private loadWorldSfxBuffer(
+    key: WorldSfxKey,
+    ctx: AudioContext
+  ): Promise<DecodedSpellSound | null> {
+    const existing = this.decodedWorldSfxBuffers[key];
+    if (existing) {
+      return Promise.resolve(existing);
+    }
+    const inFlight = this.loadingWorldSfxPromises[key];
+    if (inFlight) {
+      return inFlight;
+    }
+    if (this.worldSfxAttempted.has(key) || typeof fetch === 'undefined') {
+      return Promise.resolve(null);
+    }
+    this.worldSfxAttempted.add(key);
+
+    const url = WORLD_SFX_URLS[key];
+    const promise = fetch(url)
+      .then((res) => (res.ok ? res.arrayBuffer() : null))
+      .then((rawBuffer) => {
+        if (!rawBuffer) return null;
+        // Pass rawBuffer directly to decodeAudioData and drop any reference immediately after
+        let pendingRaw: ArrayBuffer | null = rawBuffer;
+        const decodePromise = ctx.decodeAudioData(pendingRaw);
+        pendingRaw = null;
+        return decodePromise.then((audioBuffer) => {
+          const entry: DecodedSpellSound = {
+            buffer: audioBuffer,
+            trimStartSec: this.computeLeadingSilenceOffset(audioBuffer),
+          };
+          this.decodedWorldSfxBuffers[key] = entry;
+          return entry;
+        });
+      })
+      .catch(() => null)
+      .finally(() => {
+        delete this.loadingWorldSfxPromises[key];
+      });
+
+    this.loadingWorldSfxPromises[key] = promise;
+    return promise;
+  }
+
   private ensureContext(): { ctx: AudioContext; out: AudioNode } | null {
     if (this.muted || this.masterVolume <= 0.001) return null;
     if (!this.ctx && typeof window !== 'undefined') {
@@ -245,6 +321,12 @@ class ArcaneAudioEngine {
         if (this.rawSwordExpiringData && this.ctx) {
           this.decodeSwordExpiringBuffer(this.ctx);
         }
+        // Lazily fetch & decode the 4 world SFX once AudioContext is initialized
+        (Object.keys(WORLD_SFX_URLS) as WorldSfxKey[]).forEach((key) => {
+          if (this.ctx) {
+            this.loadWorldSfxBuffer(key, this.ctx);
+          }
+        });
       }
     }
     if (!this.ctx || !this.masterGain) return null;
@@ -258,9 +340,61 @@ class ArcaneAudioEngine {
     return { ctx: this.ctx, out: this.masterGain };
   }
 
+  private stopCampfireNodes(fadeOut: boolean) {
+    const prevSource = this.campfireLoopSource;
+    const prevGain = this.campfireLoopGain;
+    this.campfireLoopSource = null;
+    this.campfireLoopGain = null;
+
+    if (!prevSource || !prevGain) return;
+
+    const cleanup = () => {
+      try {
+        prevSource.disconnect();
+      } catch {
+        // Ignore already disconnected node
+      }
+      try {
+        prevGain.disconnect();
+      } catch {
+        // Ignore already disconnected node
+      }
+    };
+
+    if (fadeOut && this.ctx && !this.muted && this.ctx.state === 'running') {
+      const now = this.ctx.currentTime;
+      try {
+        prevGain.gain.cancelScheduledValues(now);
+        prevGain.gain.setValueAtTime(prevGain.gain.value, now);
+        prevGain.gain.linearRampToValueAtTime(0, now + 0.2);
+      } catch {
+        // Ignore AudioParam errors
+      }
+      prevSource.onended = cleanup;
+      try {
+        prevSource.stop(now + 0.21);
+      } catch {
+        cleanup();
+      }
+    } else {
+      prevSource.onended = null;
+      try {
+        prevSource.stop();
+      } catch {
+        // Ignore if already stopped
+      }
+      cleanup();
+    }
+  }
+
   public setMuted(mute: boolean) {
     this.muted = mute;
     saveAudioPrefs({ muted: this.muted, masterVolume: this.masterVolume });
+    if (mute) {
+      this.campfireLoopActive = false;
+      this.campfireLoopGeneration += 1;
+      this.stopCampfireNodes(false);
+    }
     if (this.ctx && this.masterGain) {
       this.masterGain.gain.setValueAtTime(
         mute ? 0 : this.masterVolume,
@@ -450,12 +584,73 @@ class ArcaneAudioEngine {
     osc.stop(now + dur + 0.005);
   }
 
-  public playHeavyImpact(isKill = false) {
+  public playHeavyImpact(isKill = false, spellId?: string) {
+    if (this.muted) return;
     const audio = this.ensureContext();
     if (!audio) return;
     const { ctx, out } = audio;
     const now = ctx.currentTime;
 
+    let decoded: DecodedSpellSound | undefined;
+    if (spellId === 'incendio' && this.decodedSpellBuffers.incendio) {
+      decoded = this.decodedSpellBuffers.incendio;
+    } else if (spellId === 'expelliarmus' && this.decodedSpellBuffers.expelliarmus) {
+      decoded = this.decodedSpellBuffers.expelliarmus;
+    } else if (spellId === 'arcane_sword' && this.decodedSpellBuffers.arcane_sword) {
+      decoded = this.decodedSpellBuffers.arcane_sword;
+    } else {
+      decoded =
+        this.decodedSpellBuffers.stupefy ||
+        this.decodedSpellBuffers.teleport ||
+        this.decodedSpellBuffers.incendio ||
+        this.decodedSpellBuffers.expelliarmus ||
+        this.decodedSpellBuffers.arcane_sword;
+    }
+
+    if (decoded) {
+      const sliceDur = isKill ? 0.28 : 0.16;
+      const rate = isKill
+        ? 0.85 + Math.random() * 0.1
+        : 1.05 + Math.random() * 0.17;
+      const peakGain = isKill ? 0.34 : 0.22;
+      const totalDur = decoded.buffer.duration;
+      const transientShift = isKill
+        ? 0
+        : Math.min(0.03, Math.max(0, totalDur - decoded.trimStartSec - sliceDur * rate) * 0.15);
+      const startOffset = Math.min(
+        Math.max(0, totalDur - 0.05),
+        decoded.trimStartSec + transientShift
+      );
+      const maxRealDur = Math.max(0.04, (totalDur - startOffset) / rate);
+      const playDur = Math.min(sliceDur, maxRealDur);
+
+      const source = ctx.createBufferSource();
+      source.buffer = decoded.buffer;
+      source.playbackRate.setValueAtTime(rate, now);
+
+      const gain = ctx.createGain();
+      const attack = Math.min(0.012, playDur * 0.15);
+      const fadeStart = Math.max(now + attack, now + playDur * 0.45);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(peakGain, now + attack);
+      gain.gain.setValueAtTime(peakGain, fadeStart);
+      gain.gain.linearRampToValueAtTime(0, now + playDur);
+
+      source.connect(gain);
+      gain.connect(out);
+      source.onended = () => {
+        try {
+          source.disconnect();
+        } catch {
+          // Ignore
+        }
+        gain.disconnect();
+      };
+      source.start(now, startOffset, playDur);
+      return;
+    }
+
+    // Emergency fallback only if spell MP3 buffers have not finished decoding yet
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.type = 'triangle';
@@ -474,6 +669,57 @@ class ArcaneAudioEngine {
     };
     osc.start(now);
     osc.stop(now + dur + 0.01);
+  }
+
+  /**
+   * Plays a brief (0.28s), quiet (peak gain 0.22) crackling fire slice from the already-decoded
+   * campfire loop buffer (or incendio spell buffer as fallback) for enemy burn DoT ticks.
+   */
+  public playFireBurnTick() {
+    if (this.muted) return;
+    const audio = this.ensureContext();
+    if (!audio) return;
+    const { ctx, out } = audio;
+
+    const decoded =
+      this.decodedWorldSfxBuffers.campfire_loop || this.decodedSpellBuffers.incendio;
+    if (!decoded) return;
+
+    const now = ctx.currentTime;
+    const sliceDur = 0.28;
+    const totalDur = decoded.buffer.duration;
+    const minOffset = Math.min(decoded.trimStartSec, Math.max(0, totalDur - 0.05));
+    const maxOffset = Math.max(minOffset, totalDur - sliceDur - 0.05);
+    const offset =
+      maxOffset > minOffset
+        ? minOffset + Math.random() * (maxOffset - minOffset)
+        : minOffset;
+    const playDur = Math.min(sliceDur, Math.max(0.05, totalDur - offset));
+
+    const source = ctx.createBufferSource();
+    source.buffer = decoded.buffer;
+    source.playbackRate.setValueAtTime(0.95 + Math.random() * 0.1, now);
+
+    const gain = ctx.createGain();
+    const fadeIn = Math.min(0.04, playDur * 0.25);
+    const fadeOut = Math.min(0.1, playDur * 0.45);
+    const fadeOutStart = Math.max(now + fadeIn, now + playDur - fadeOut);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(0.22, now + fadeIn);
+    gain.gain.setValueAtTime(0.22, fadeOutStart);
+    gain.gain.linearRampToValueAtTime(0.0001, now + playDur);
+
+    source.connect(gain);
+    gain.connect(out);
+    source.onended = () => {
+      try {
+        source.disconnect();
+      } catch {
+        // Ignore
+      }
+      gain.disconnect();
+    };
+    source.start(now, offset, playDur);
   }
 
   public playPickupChime() {
@@ -496,6 +742,180 @@ class ArcaneAudioEngine {
       };
       osc.start(now + idx * 0.05);
       osc.stop(now + idx * 0.05 + 0.15);
+    });
+  }
+
+  /**
+   * Plays File #1 for chopping trees ('ancient_wood') or File #2 for picking flowers ('mandrake_root'),
+   * falling back to playPickupChime() if not decoded yet.
+   */
+  public playHarvestSound(reagentId: ReagentId) {
+    if (this.muted) return;
+    const key: WorldSfxKey | null =
+      reagentId === 'ancient_wood'
+        ? 'tree_chop'
+        : reagentId === 'mandrake_root'
+        ? 'herb_pick'
+        : null;
+    if (!key) {
+      this.playPickupChime();
+      return;
+    }
+
+    const audio = this.ensureContext();
+    if (!audio) return;
+    const { ctx, out } = audio;
+
+    const decoded = this.decodedWorldSfxBuffers[key];
+    if (!decoded) {
+      this.loadWorldSfxBuffer(key, ctx);
+      this.playPickupChime();
+      return;
+    }
+
+    const now = ctx.currentTime;
+    const source = ctx.createBufferSource();
+    source.buffer = decoded.buffer;
+    source.playbackRate.setValueAtTime(0.96 + Math.random() * 0.08, now);
+
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.58, now);
+
+    source.connect(gain);
+    gain.connect(out);
+    source.onended = () => {
+      try {
+        source.disconnect();
+      } catch {
+        // Ignore
+      }
+      gain.disconnect();
+    };
+    source.start(now, decoded.trimStartSec);
+  }
+
+  /**
+   * Plays File #4 for wooden wall build (1.0x pitch) and dismantle (0.88x pitch),
+   * falling back to playHeavyImpact(false) if not decoded yet.
+   */
+  public playWallSound(action: 'build' | 'dismantle') {
+    if (this.muted) return;
+    const audio = this.ensureContext();
+    if (!audio) return;
+    const { ctx, out } = audio;
+
+    const decoded = this.decodedWorldSfxBuffers.wall_action;
+    if (!decoded) {
+      this.loadWorldSfxBuffer('wall_action', ctx);
+      this.playHeavyImpact(false);
+      return;
+    }
+
+    const now = ctx.currentTime;
+    const source = ctx.createBufferSource();
+    source.buffer = decoded.buffer;
+    source.playbackRate.setValueAtTime(action === 'build' ? 1.0 : 0.88, now);
+
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.56, now);
+
+    source.connect(gain);
+    gain.connect(out);
+    source.onended = () => {
+      try {
+        source.disconnect();
+      } catch {
+        // Ignore
+      }
+      gain.disconnect();
+    };
+    source.start(now, decoded.trimStartSec);
+  }
+
+  /**
+   * Zero-CPU guarded looping campfire fire sound (File #3).
+   * Safe to invoke every frame in the 60fps simulation loop.
+   */
+  public setCampfireLoop(active: boolean, forceRestart = false) {
+    const shouldPlay = active && !this.muted;
+    if (!forceRestart && shouldPlay === this.campfireLoopActive) {
+      return;
+    }
+
+    this.campfireLoopActive = shouldPlay;
+    this.campfireLoopGeneration += 1;
+    const gen = this.campfireLoopGeneration;
+
+    if (!shouldPlay) {
+      this.stopCampfireNodes(true);
+      return;
+    }
+
+    // Stop & disconnect any previous campfire node immediately before starting a fresh one
+    this.stopCampfireNodes(false);
+
+    const audio = this.ensureContext();
+    if (!audio) {
+      this.campfireLoopActive = false;
+      return;
+    }
+    const { ctx, out } = audio;
+
+    const startFreshLoop = (decoded: DecodedSpellSound) => {
+      if (gen !== this.campfireLoopGeneration || !this.campfireLoopActive || this.muted) {
+        return;
+      }
+      this.stopCampfireNodes(false);
+      const now = ctx.currentTime;
+      const source = ctx.createBufferSource();
+      source.buffer = decoded.buffer;
+      source.loop = true;
+      source.loopStart = decoded.trimStartSec;
+      if (decoded.buffer.duration > decoded.trimStartSec) {
+        source.loopEnd = decoded.buffer.duration;
+      }
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(0.45, now + 0.15);
+
+      source.connect(gain);
+      gain.connect(out);
+      this.campfireLoopSource = source;
+      this.campfireLoopGain = gain;
+
+      source.onended = () => {
+        try {
+          source.disconnect();
+        } catch {
+          // Ignore
+        }
+        try {
+          gain.disconnect();
+        } catch {
+          // Ignore
+        }
+        if (this.campfireLoopSource === source) {
+          this.campfireLoopSource = null;
+        }
+        if (this.campfireLoopGain === gain) {
+          this.campfireLoopGain = null;
+        }
+      };
+
+      source.start(now, decoded.trimStartSec);
+    };
+
+    const decoded = this.decodedWorldSfxBuffers.campfire_loop;
+    if (decoded) {
+      startFreshLoop(decoded);
+      return;
+    }
+
+    this.loadWorldSfxBuffer('campfire_loop', ctx).then((loaded) => {
+      if (loaded) {
+        startFreshLoop(loaded);
+      }
     });
   }
 
