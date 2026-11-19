@@ -126,6 +126,8 @@ export class ArcaneAudioEngine {
   private campfireLoopSource: AudioBufferSourceNode | null = null;
   private campfireLoopGain: GainNode | null = null;
   private campfireLoopGeneration = 0;
+  private lastEnemyCastSoundMs = 0;
+  private lastPlayerHurtSoundMs = 0;
   public muted = false;
   public masterVolume = 0.85;
 
@@ -946,11 +948,103 @@ export class ArcaneAudioEngine {
     // Intentionally silent: avoids continuous background humming when multiple enemies/totems are active
   }
 
-  public playPlayerHurt() {
+  /**
+   * Plays a quiet, distance-attenuated, throttled slice from already-decoded spell MP3 buffers
+   * when an enemy fires a spell or arrow. Never allocates extra RAM or falls back to synth beeps.
+   */
+  public playEnemySpellCast(spellId: SpellId, distance: number) {
+    if (this.muted || distance > 22) return;
+    const nowMs = performance.now();
+    if (this.lastEnemyCastSoundMs > 0 && nowMs - this.lastEnemyCastSoundMs < 260) {
+      return;
+    }
+
+    const decoded = this.decodedSpellBuffers[spellId] || this.decodedSpellBuffers['stupefy'];
+    if (!decoded) return;
+
     const audio = this.ensureContext();
     if (!audio) return;
+    this.lastEnemyCastSoundMs = nowMs;
+
     const { ctx, out } = audio;
     const now = ctx.currentTime;
+    const duration = 0.26;
+    const rate = 0.8 + Math.random() * 0.1;
+    const distFactor = Math.max(0.15, 1 - distance / 22);
+    const vol = 0.14 * distFactor;
+
+    const source = ctx.createBufferSource();
+    source.buffer = decoded.buffer;
+    source.playbackRate.setValueAtTime(rate, now);
+
+    const gain = ctx.createGain();
+    const fadeStart = now + Math.max(0.01, duration - 0.08);
+    gain.gain.setValueAtTime(vol, now);
+    gain.gain.setValueAtTime(vol, fadeStart);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+
+    source.connect(gain);
+    gain.connect(out);
+    source.onended = () => {
+      try {
+        source.disconnect();
+      } catch {
+        // Ignore
+      }
+      gain.disconnect();
+    };
+    source.start(now, decoded.trimStartSec, duration);
+    source.stop(now + duration);
+  }
+
+  public playPlayerHurt(damage = 12) {
+    if (this.muted) return;
+    const nowMs = performance.now();
+    if (this.lastPlayerHurtSoundMs > 0 && nowMs - this.lastPlayerHurtSoundMs < 180) {
+      return;
+    }
+
+    const audio = this.ensureContext();
+    if (!audio) return;
+    this.lastPlayerHurtSoundMs = nowMs;
+
+    const { ctx, out } = audio;
+    const now = ctx.currentTime;
+
+    const decoded =
+      this.decodedSpellBuffers['stupefy'] || this.decodedSpellBuffers['teleport'];
+    if (decoded) {
+      const duration = 0.22;
+      const rate = 0.72 + Math.random() * 0.08;
+      const safeDamage = Math.max(0, Number.isFinite(damage) ? damage : 12);
+      const vol = Math.min(0.38, 0.24 + (safeDamage / 50) * 0.14);
+
+      const source = ctx.createBufferSource();
+      source.buffer = decoded.buffer;
+      source.playbackRate.setValueAtTime(rate, now);
+
+      const gain = ctx.createGain();
+      const fadeStart = now + Math.max(0.01, duration - 0.08);
+      gain.gain.setValueAtTime(vol, now);
+      gain.gain.setValueAtTime(vol, fadeStart);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+
+      source.connect(gain);
+      gain.connect(out);
+      source.onended = () => {
+        try {
+          source.disconnect();
+        } catch {
+          // Ignore
+        }
+        gain.disconnect();
+      };
+      source.start(now, decoded.trimStartSec, duration);
+      source.stop(now + duration);
+      return;
+    }
+
+    // Fallback oscillator ONLY if neither MP3 buffer is decoded yet
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.type = 'triangle';

@@ -641,4 +641,252 @@ test('playFireBurnTick and playHeavyImpact reuse decoded MP3 slices with clean e
   }
 });
 
+test('playEnemySpellCast and playPlayerHurt reuse decoded MP3 slices with anti-spam throttling and distance attenuation', async () => {
+  interface MockParam {
+    value: number;
+    setCalls: Array<[number, number]>;
+    linearRampCalls: Array<[number, number]>;
+    expRampCalls: Array<[number, number]>;
+    setValueAtTime: (v: number, t: number) => void;
+    linearRampToValueAtTime: (v: number, t: number) => void;
+    exponentialRampToValueAtTime: (v: number, t: number) => void;
+    cancelScheduledValues: (t: number) => void;
+  }
 
+  const makeParam = (initial = 1): MockParam => {
+    const p: MockParam = {
+      value: initial,
+      setCalls: [],
+      linearRampCalls: [],
+      expRampCalls: [],
+      setValueAtTime(v: number, t: number) {
+        p.value = v;
+        p.setCalls.push([v, t]);
+      },
+      linearRampToValueAtTime(v: number, t: number) {
+        p.value = v;
+        p.linearRampCalls.push([v, t]);
+      },
+      exponentialRampToValueAtTime(v: number, t: number) {
+        p.value = v;
+        p.expRampCalls.push([v, t]);
+      },
+      cancelScheduledValues() {},
+    };
+    return p;
+  };
+
+  interface MockGain {
+    gain: MockParam;
+    disconnected: boolean;
+    connect: () => void;
+    disconnect: () => void;
+  }
+
+  interface MockSource {
+    buffer: { tag: string; duration: number } | null;
+    playbackRate: MockParam;
+    startCalls: Array<[number, number, number | undefined]>;
+    stopCalls: Array<number | undefined>;
+    disconnected: boolean;
+    onended: (() => void) | null;
+    connect: () => void;
+    disconnect: () => void;
+    start: (when?: number, offset?: number, duration?: number) => void;
+    stop: (when?: number) => void;
+  }
+
+  const sources: MockSource[] = [];
+  const gains: MockGain[] = [];
+  let oscCount = 0;
+
+  class MockAudioContext {
+    public currentTime = 30;
+    public state: AudioContextState = 'running';
+    public destination = {};
+
+    createGain() {
+      const g: MockGain = {
+        gain: makeParam(1),
+        disconnected: false,
+        connect() {},
+        disconnect() {
+          g.disconnected = true;
+        },
+      };
+      gains.push(g);
+      return g;
+    }
+
+    createOscillator() {
+      oscCount += 1;
+      return {
+        type: 'triangle',
+        frequency: makeParam(190),
+        onended: null as (() => void) | null,
+        connect() {},
+        start() {},
+        stop() {},
+      };
+    }
+
+    createBufferSource() {
+      const s: MockSource = {
+        buffer: null,
+        playbackRate: makeParam(1),
+        startCalls: [],
+        stopCalls: [],
+        disconnected: false,
+        onended: null,
+        connect() {},
+        disconnect() {
+          s.disconnected = true;
+        },
+        start(when = 0, offset = 0, duration?: number) {
+          s.startCalls.push([when, offset, duration]);
+        },
+        stop(when?: number) {
+          s.stopCalls.push(when);
+        },
+      };
+      sources.push(s);
+      return s;
+    }
+
+    async decodeAudioData(buf: ArrayBuffer) {
+      const tag = String.fromCharCode(...new Uint8Array(buf));
+      const samples = new Float32Array(2000);
+      for (let i = 100; i < 2000; i++) samples[i] = 0.5;
+      return {
+        tag,
+        sampleRate: 1000,
+        length: 2000,
+        duration: 2.0,
+        numberOfChannels: 1,
+        getChannelData: () => samples,
+      };
+    }
+
+    async suspend() {
+      this.state = 'suspended';
+    }
+    async resume() {
+      this.state = 'running';
+    }
+  }
+
+  const g = globalThis as unknown as {
+    window?: Record<string, unknown>;
+    fetch?: typeof fetch;
+  };
+  const prevWindow = g.window;
+  const prevFetch = g.fetch;
+  const origPerfNow = performance.now.bind(performance);
+  let fakeNowMs = 1000;
+  performance.now = () => fakeNowMs;
+
+  const urlTags: Array<[string, string]> = [
+    ['fire-magic-6', 'INCENDIO'],
+    ['swoosh-012', 'WINGARDIUM'],
+    ['whoosh-transition-impact', 'STUPEFY'],
+    ['bang-smoke-cloud', 'TELEPORT'],
+  ];
+
+  g.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    const match = urlTags.find(([needle]) => url.includes(needle));
+    if (!match) {
+      return { ok: false, arrayBuffer: async () => new ArrayBuffer(0) } as Response;
+    }
+    const bytes = new Uint8Array(match[1].length);
+    for (let i = 0; i < match[1].length; i++) bytes[i] = match[1].charCodeAt(i);
+    return { ok: true, arrayBuffer: async () => bytes.buffer } as Response;
+  }) as typeof fetch;
+
+  g.window = { AudioContext: MockAudioContext };
+
+  try {
+    const engine = new ArcaneAudioEngine();
+
+    // Before decoding: playEnemySpellCast is completely silent (no oscillator), while playPlayerHurt falls back to oscillator
+    engine.playEnemySpellCast('incendio', 5);
+    assert.equal(sources.length, 0);
+    assert.equal(oscCount, 0);
+
+    engine.playPlayerHurt(12);
+    assert.equal(oscCount, 1);
+
+    // Wait for spell buffers to finish decoding
+    await new Promise((r) => setTimeout(r, 25));
+    const oscAfterDecode = oscCount;
+
+    // 1. Enemy spell cast > 22m is silently ignored
+    engine.playEnemySpellCast('incendio', 25);
+    assert.equal(sources.length, 0);
+
+    // 2. Enemy spell volley at distance 11m: first plays, rapid follow-ups within 260ms are throttled
+    fakeNowMs = 2000;
+    engine.playEnemySpellCast('incendio', 11);
+    engine.playEnemySpellCast('incendio', 11);
+    engine.playEnemySpellCast('incendio', 11);
+    assert.equal(sources.length, 1);
+
+    const enemySrc = sources[0];
+    const enemyGain = gains[gains.length - 1];
+    assert.equal(enemySrc.buffer?.tag, 'INCENDIO');
+    assert.ok(Math.abs(enemySrc.startCalls[0][1] - 0.098) < 0.001);
+    assert.equal(enemySrc.startCalls[0][2], 0.26);
+    assert.ok(enemySrc.playbackRate.value >= 0.8 && enemySrc.playbackRate.value <= 0.9);
+    // distFactor = 1 - 11/22 = 0.5 -> vol = 0.07
+    assert.ok(Math.abs(enemyGain.gain.setCalls[0][0] - 0.07) < 0.0001);
+    assert.ok(Math.abs(enemyGain.gain.setCalls[1][1] - 30.18) < 0.001);
+    assert.equal(enemyGain.gain.expRampCalls[0][0], 0.0001);
+    assert.ok(Math.abs(enemyGain.gain.expRampCalls[0][1] - 30.26) < 0.001);
+    enemySrc.onended?.();
+    assert.equal(enemyGain.disconnected, true);
+
+    // 3. After 260ms, un-decoded spell falls back to 'stupefy' and far distance clamps distFactor to 0.15
+    fakeNowMs = 2300;
+    engine.playEnemySpellCast('glacius', 21.5);
+    assert.equal(sources.length, 2);
+    assert.equal(sources[1].buffer?.tag, 'STUPEFY');
+    assert.ok(Math.abs(gains[gains.length - 1].gain.setCalls[0][0] - 0.14 * 0.15) < 0.0001);
+
+    // 4. Arrow swoosh uses 'wingardium'
+    fakeNowMs = 2600;
+    engine.playEnemySpellCast('wingardium', 0);
+    assert.equal(sources.length, 3);
+    assert.equal(sources[2].buffer?.tag, 'WINGARDIUM');
+    assert.ok(Math.abs(gains[gains.length - 1].gain.setCalls[0][0] - 0.14) < 0.0001);
+
+    // 5. playPlayerHurt uses decoded 'stupefy', scales gain by damage, throttles within 180ms, and never uses oscillator
+    fakeNowMs = 3000;
+    engine.playPlayerHurt(25);
+    engine.playPlayerHurt(50); // throttled (< 180ms)
+    assert.equal(sources.length, 4);
+    assert.equal(oscCount, oscAfterDecode);
+
+    const hurtSrc = sources[3];
+    const hurtGain = gains[gains.length - 1];
+    assert.equal(hurtSrc.buffer?.tag, 'STUPEFY');
+    assert.ok(Math.abs(hurtSrc.startCalls[0][1] - 0.098) < 0.001);
+    assert.equal(hurtSrc.startCalls[0][2], 0.22);
+    assert.ok(hurtSrc.playbackRate.value >= 0.72 && hurtSrc.playbackRate.value <= 0.8);
+    // damage=25 -> 0.24 + 0.5 * 0.14 = 0.31
+    assert.ok(Math.abs(hurtGain.gain.setCalls[0][0] - 0.31) < 0.0001);
+    assert.equal(hurtGain.gain.expRampCalls[0][0], 0.0001);
+    assert.ok(Math.abs(hurtGain.gain.expRampCalls[0][1] - 30.22) < 0.001);
+    hurtSrc.onended?.();
+    assert.equal(hurtGain.disconnected, true);
+
+    // High damage caps gain at 0.38 after throttle expires
+    fakeNowMs = 3200;
+    engine.playPlayerHurt(120);
+    assert.equal(sources.length, 5);
+    assert.ok(Math.abs(gains[gains.length - 1].gain.setCalls[0][0] - 0.38) < 0.0001);
+  } finally {
+    performance.now = origPerfNow;
+    g.window = prevWindow;
+    g.fetch = prevFetch;
+  }
+});

@@ -9966,6 +9966,10 @@ export class ArcaneWorldEngine {
     colorHex: string | number;
     isPetAttack?: boolean;
   }) {
+    if (opts.casterId === 'enemy') {
+      const dist = opts.origin.distanceTo(this.playerPos);
+      audioEngine.playEnemySpellCast(opts.isArrow ? 'wingardium' : opts.spellId, dist);
+    }
     const col = new THREE.Color(opts.colorHex);
     let mesh: THREE.Object3D;
 
@@ -14710,7 +14714,7 @@ export class ArcaneWorldEngine {
     this.tookDamageThisStage = true;
     this.hp = Math.max(0, this.hp - amount);
     this.cameraTrauma = Math.min(1, this.cameraTrauma + 0.42);
-    audioEngine.playPlayerHurt();
+    audioEngine.playPlayerHurt(amount);
 
     if (this.hp <= 0 && this.mode === 'playing') {
       this.mode = 'gameover';
