@@ -141,6 +141,8 @@ interface SpellDockGridProps {
   spellCooldowns: Record<SpellId, number>;
   onSelectSpell: (spellId: SpellId) => void;
   compactMobile?: boolean;
+  spellOrder?: readonly SpellId[];
+  isMobileTouch?: boolean;
 }
 
 const SpellDockGrid = memo(
@@ -151,6 +153,8 @@ const SpellDockGrid = memo(
     spellCooldowns,
     onSelectSpell,
     compactMobile = false,
+    spellOrder = SPELL_ORDER,
+    isMobileTouch = false,
   }: SpellDockGridProps) {
     const svgPointsBySpell = useMemo(() => {
       const map = {} as Record<SpellId, string>;
@@ -162,6 +166,8 @@ const SpellDockGrid = memo(
       }
       return map;
     }, [aimSurfaceTarget]);
+
+    const useDirectPointerDown = compactMobile || isMobileTouch;
 
     const renderSpellButton = (spId: SpellId) => {
       const sp = SPELLS[spId];
@@ -177,7 +183,16 @@ const SpellDockGrid = memo(
           key={sp.id}
           type="button"
           data-testid={`spell-dock-btn-${sp.id}`}
-          onClick={() => onSelectSpell(sp.id)}
+          onPointerDown={
+            useDirectPointerDown
+              ? (e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  onSelectSpell(sp.id);
+                }
+              : undefined
+          }
+          onClick={useDirectPointerDown ? undefined : () => onSelectSpell(sp.id)}
           className={`relative overflow-hidden rounded-lg border flex flex-col items-center justify-center transition-all cursor-pointer ${
             compactMobile
               ? 'shrink-0 min-w-[54px] py-1.5 px-1.5 gap-0.5'
@@ -282,14 +297,14 @@ const SpellDockGrid = memo(
           className="max-w-[92vw] sm:max-w-[54vw] p-1.5 rounded-xl border border-[#3b3154] shadow-2xl flex items-center gap-1.5 overflow-x-auto no-scrollbar touch-pan-x"
           style={{ backgroundColor: 'rgba(14, 12, 22, 0.9)' }}
         >
-          {SPELL_ORDER.map(renderSpellButton)}
+          {spellOrder.map(renderSpellButton)}
         </div>
       );
     }
 
-    const combatSpells = SPELL_ORDER.slice(0, 4);
-    const tacticalSpells = SPELL_ORDER.slice(4, 8);
-    const utilitySpells = SPELL_ORDER.slice(8, 11);
+    const combatSpells = spellOrder.slice(0, 4);
+    const tacticalSpells = spellOrder.slice(4, 8);
+    const utilitySpells = spellOrder.slice(8, 11);
 
     return (
       <div
@@ -326,7 +341,9 @@ const SpellDockGrid = memo(
       prev.spellLevels !== next.spellLevels ||
       prev.aimSurfaceTarget !== next.aimSurfaceTarget ||
       prev.onSelectSpell !== next.onSelectSpell ||
-      prev.compactMobile !== next.compactMobile
+      prev.compactMobile !== next.compactMobile ||
+      prev.spellOrder !== next.spellOrder ||
+      prev.isMobileTouch !== next.isMobileTouch
     ) {
       return false;
     }
@@ -562,6 +579,16 @@ export default function App() {
   const mobileDrawDirectModeRef = useRef(false);
   const activeJoyPointerIdRef = useRef<number | null>(null);
   const joyBaseRef = useRef<HTMLDivElement | null>(null);
+
+  const dockSpellOrder = useMemo(
+    () =>
+      controlScheme === 'mobile'
+        ? SPELL_ORDER.map((id) =>
+            id === 'engorgio' ? 'teleport' : id === 'teleport' ? 'engorgio' : id
+          )
+        : SPELL_ORDER,
+    [controlScheme]
+  );
 
   useEffect(() => {
     const onResize = () => {
@@ -2124,14 +2151,23 @@ export default function App() {
 
       if (
         (e.code === 'KeyM' || e.key === 'ь' || e.key === 'Ь') &&
-        gameState === 'playing' &&
-        !grimoireOpen &&
-        !accountModalOpen &&
         !e.repeat
       ) {
-        e.preventDefault();
-        toggleRadar();
-        return;
+        if (e.shiftKey) {
+          e.preventDefault();
+          setMuted((prev) => {
+            const next = !prev;
+            audioEngine.setMuted(next);
+            showToast(next ? '🔇 Звук выключен' : '🔊 Звук включён');
+            return next;
+          });
+          return;
+        }
+        if (gameState === 'playing' && !grimoireOpen && !accountModalOpen) {
+          e.preventDefault();
+          toggleRadar();
+          return;
+        }
       }
 
       // 5-state progressive [H] HUD visibility cycle:
@@ -2756,6 +2792,7 @@ export default function App() {
 
   const handleJoystickPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     e.stopPropagation();
+    e.preventDefault();
     if (gameState !== 'playing' || grimoireOpen) return;
     if (activeJoyPointerIdRef.current !== null) return;
     activeJoyPointerIdRef.current = e.pointerId;
@@ -2806,11 +2843,15 @@ export default function App() {
   };
 
   const handleViewportPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (activeJoyPointerIdRef.current !== null && e.pointerId === activeJoyPointerIdRef.current) {
+      return;
+    }
     if (gameState !== 'playing' || grimoireOpen) return;
 
     // Mobile Touch Control Scheme: separate pointer IDs for multi-touch camera look & 1-stroke rune drawing
     if (stateRef.current.controlScheme === 'mobile') {
       if (e.pointerId === activeJoyPointerIdRef.current) return;
+      e.preventDefault();
       if (showControlsHelp) setShowControlsHelp(false);
 
       if (stateRef.current.mobileDrawMode) {
@@ -2956,6 +2997,9 @@ export default function App() {
   };
 
   const handleViewportPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (activeJoyPointerIdRef.current !== null && e.pointerId === activeJoyPointerIdRef.current) {
+      return;
+    }
     if (gameState !== 'playing' || grimoireOpen) return;
 
     if (stateRef.current.controlScheme === 'mobile') {
@@ -3127,6 +3171,9 @@ export default function App() {
   };
 
   const handleViewportPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (activeJoyPointerIdRef.current !== null && e.pointerId === activeJoyPointerIdRef.current) {
+      return;
+    }
     if (stateRef.current.controlScheme === 'mobile') {
       if (e.pointerId === activeLookPointerIdRef.current) {
         activeLookPointerIdRef.current = null;
@@ -4071,56 +4118,57 @@ export default function App() {
           {hudHideStep < 2 && (
             <div
               data-testid="hud-top-left-panel"
-              className={`absolute p-3 rounded-xl border border-[#3b3154] space-y-2 pointer-events-auto w-[250px] ${
+              className={`absolute w-[155px] sm:w-[215px] p-1.5 sm:p-2 rounded-xl border border-[#3b3154] space-y-1 pointer-events-auto ${
                 controlScheme === 'mobile'
-                  ? 'top-[54px] sm:top-3 left-2.5 sm:left-3 origin-top-left scale-[0.82] sm:scale-[0.84] md:scale-100'
-                  : 'top-4 left-4'
+                  ? 'top-[44px] sm:top-3 left-2.5 sm:left-3'
+                  : 'top-3 left-3'
               }`}
               style={{ backgroundColor: 'rgba(14, 12, 22, 0.88)' }}
             >
-              {/* Red Health Bar with Heart & Number directly on the bar */}
-              <div className="relative h-7 bg-[#241219] rounded-lg overflow-hidden border border-[#7f1d1d] flex items-center">
+              {/* Slim Red Health Bar with Heart, inline Level, and HP Number */}
+              <div className="relative h-4 sm:h-5 bg-[#241219] rounded overflow-hidden border border-[#7f1d1d] flex items-center">
                 <div
                   className="h-full bg-[#dc2626] transition-all duration-150"
                   style={{ width: `${Math.max(0, Math.min(100, (hud.hp / hud.maxHp) * 100))}%` }}
                 />
-                <div className="absolute inset-0 px-2.5 flex items-center justify-between text-xs font-bold font-mono-num text-white hud-stroke">
-                  <span className="flex items-center gap-1.5">
-                    <svg viewBox="0 0 24 24" className="w-4 h-4 shrink-0" aria-hidden="true">
+                <div className="absolute inset-0 px-1.5 flex items-center justify-between text-[10px] sm:text-xs font-bold font-mono-num text-white hud-stroke leading-none">
+                  <span className="flex items-center gap-1">
+                    <svg viewBox="0 0 24 24" className="w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0" aria-hidden="true">
                       <path
                         d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"
                         fill="#fca5a5"
                       />
                     </svg>
+                    <span className="text-[#fde047] text-[9px] sm:text-[10px]">Ур.{playerLevel}</span>
                   </span>
                   <span>
-                    {hud.hp} / {hud.maxHp}
+                    {hud.hp}/{hud.maxHp}
                   </span>
                 </div>
               </div>
 
-              {/* Blue Mana Bar with Crystal & Number directly on the bar */}
-              <div className="relative h-7 bg-[#0f1d2e] rounded-lg overflow-hidden border border-[#0369a1] flex items-center">
+              {/* Slim Blue Mana Bar with Crystal & MP Number */}
+              <div className="relative h-4 sm:h-5 bg-[#0f1d2e] rounded overflow-hidden border border-[#0369a1] flex items-center">
                 <div
                   className="h-full bg-[#0284c7] transition-all duration-150"
                   style={{ width: `${Math.max(0, Math.min(100, (hud.mp / hud.maxMp) * 100))}%` }}
                 />
-                <div className="absolute inset-0 px-2.5 flex items-center justify-between text-xs font-bold font-mono-num text-white hud-stroke">
-                  <span className="flex items-center gap-1.5">
-                    <svg viewBox="0 0 24 24" className="w-4 h-4 shrink-0" aria-hidden="true">
+                <div className="absolute inset-0 px-1.5 flex items-center justify-between text-[10px] sm:text-xs font-bold font-mono-num text-white hud-stroke leading-none">
+                  <span className="flex items-center gap-1">
+                    <svg viewBox="0 0 24 24" className="w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0" aria-hidden="true">
                       <polygon points="12,2 20,10 12,22 4,10" fill="#7dd3fc" />
                     </svg>
                   </span>
                   <span>
-                    {Math.round(hud.mp)} / {hud.maxMp}
+                    {Math.round(hud.mp)}/{hud.maxMp}
                   </span>
                 </div>
               </div>
 
-              {/* Gold/Purple XP & Player Level Bar (Always visible on main HUD so player sees XP & Level!) */}
+              {/* Minimal Thin XP Progress Strip (Zero text inside) */}
               <div
                 data-testid="hud-xp-level-bar"
-                className="relative h-6 bg-[#1b1429] rounded-lg overflow-hidden border border-[#7e22ce] flex items-center"
+                className="h-1.5 w-full rounded-full bg-[#1b1429] overflow-hidden"
               >
                 <div
                   className="h-full bg-gradient-to-r from-[#7e22ce] via-[#a855f7] to-[#f59e0b] transition-all duration-200"
@@ -4131,138 +4179,130 @@ export default function App() {
                     )}%`,
                   }}
                 />
-                <div className="absolute inset-0 px-2.5 flex items-center justify-between text-[11px] font-bold font-mono-num text-white hud-stroke">
-                  <span className="text-[#fde047]">Ур. {playerLevel}</span>
-                  <span>
-                    Опыт: {playerXp} / {nextLevelXp} XP
-                  </span>
-                </div>
               </div>
 
-              {/* Compact 120x120 2D Top-Down Radar ([Tab / M] toggles visibility & saves FPS when hidden) */}
+              {/* Compact 2D Top-Down Radar ([M] toggles visibility; zero-space pill when collapsed) */}
               {radarVisible ? (
                 <div
                   data-testid="hud-radar-container"
-                  className="flex items-start justify-between gap-2 pt-0.5"
+                  className="flex items-start justify-between gap-1.5 pt-0.5"
                 >
-                  <div className="relative w-[120px] h-[120px] rounded-lg overflow-hidden border border-[#3b3154] bg-[#0a0c14] shrink-0">
+                  <div className="relative w-[76px] h-[76px] sm:w-[112px] sm:h-[112px] rounded-lg overflow-hidden border border-[#3b3154] bg-[#0a0c14] shrink-0">
                     <canvas
                       ref={radarCanvasRef}
                       width={RADAR_CANVAS_SIZE}
                       height={RADAR_CANVAS_SIZE}
                       data-testid="hud-radar-canvas"
-                      className="block w-[120px] h-[120px]"
+                      className="block w-full h-full"
                     />
                   </div>
-                  <div className="flex flex-col gap-1 text-[10px] font-mono-num text-[#cbd5e1] leading-tight">
+                  <div className="flex flex-col gap-0.5 text-[9px] sm:text-[10px] font-mono-num text-[#cbd5e1] leading-tight min-w-0">
                     <button
                       type="button"
                       tabIndex={-1}
                       data-testid="hud-radar-toggle-btn"
-                      onClick={(e) => {
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
                         e.currentTarget.blur();
                         toggleRadar();
                       }}
-                      className="px-1.5 py-0.5 rounded bg-[#181426] hover:bg-[#26203b] border border-[#3b3154] text-[#fde047] font-bold text-left cursor-pointer"
+                      className="px-1 sm:px-1.5 py-0.5 rounded bg-[#181426] hover:bg-[#26203b] border border-[#3b3154] text-[#fde047] font-bold text-left cursor-pointer whitespace-nowrap text-[8.5px] sm:text-[10px]"
                     >
                       [M] Скрыть
                     </button>
-                    <span className="text-[#22d3ee]">● Портал</span>
-                    <span className="text-[#facc15]">■ Сундук</span>
-                    <span className="text-[#fb923c]">● Костёр</span>
-                    <span className="text-[#4ade80]">● Союзник</span>
+                    <span className="text-[#22d3ee] truncate">● Портал</span>
+                    <span className="text-[#facc15] truncate">■ Сундук</span>
+                    <span className="text-[#fb923c] truncate">● Костёр</span>
+                    <span className="text-[#4ade80] truncate">● Союзник</span>
                   </div>
                 </div>
               ) : (
-                <button
-                  type="button"
-                  tabIndex={-1}
-                  data-testid="hud-radar-restore-btn"
-                  onClick={(e) => {
-                    e.currentTarget.blur();
-                    toggleRadar();
-                  }}
-                  className="w-full px-2 py-1 rounded-lg border border-[#3b3154] bg-[#14111f] hover:bg-[#211c33] text-[10px] font-mono-num font-bold text-[#94a3b8] hover:text-[#fde047] text-left cursor-pointer"
-                >
-                  🗺️ Радар выкл · [M] вернуть
-                </button>
+                <div className="flex items-center">
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    data-testid="hud-radar-restore-btn"
+                    onPointerDown={(e) => {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      e.currentTarget.blur();
+                      toggleRadar();
+                    }}
+                    className="px-2 py-0.5 rounded border border-[#3b3154] bg-[#14111f] hover:bg-[#211c33] text-[10px] leading-tight font-mono-num font-bold text-[#cbd5e1] hover:text-[#fde047] cursor-pointer whitespace-nowrap"
+                  >
+                    [M] Радар
+                  </button>
+                </div>
               )}
 
-              {/* Active Campfire Aura Indicator (Small Radius <= 4.2m; 2x Regen when surrounded by >= 3 built walls!) */}
-              {hud.campfireStatus === 'lit_in_aura' && (
+              {/* Compact Inline Buff Pills Row (Icon + Short Timer/Value) */}
+              {(hud.campfireStatus === 'lit_in_aura' ||
+                hud.campfireStatus === 'unlit_nearby' ||
+                hud.activeFoodBuff ||
+                hud.activeBatFoodBuff ||
+                hud.activeElementalAlly ||
+                hud.activeArcaneSword ||
+                hud.playerFearTimeLeft > 0.05) && (
                 <div
-                  data-testid="hud-campfire-aura-badge"
-                  className={`px-2 py-1 rounded-lg border text-[11px] font-mono-num flex items-center justify-between ${
-                    hud.campfireSheltered
-                      ? 'bg-[#102a1d] border-[#4ade80] text-[#bbf7d0]'
-                      : 'bg-[#2a160d] border-[#f97316] text-[#fed7aa]'
-                  }`}
+                  data-testid="hud-buff-pills"
+                  className="flex flex-wrap gap-1 pt-0.5"
                 >
-                  <span>
-                    {hud.campfireSheltered
-                      ? '🏠 Дом у костра (3+ стены): +1.0 ОЗ/с · ×3.0 МП (×2!)'
-                      : `🔥 У костра (${hud.campfireWallsCount || 0}/3 стен): +0.5 ОЗ/с · +50% МП`}
-                  </span>
-                </div>
-              )}
-              {hud.campfireStatus === 'unlit_nearby' && (
-                <div className="px-2 py-1 rounded-lg bg-[#241f10] border border-[#f59e0b] text-[11px] font-mono-num text-[#fde047]">
-                  🪵 Стрельните «Огонь» [1] в костёр! ({hud.campfireWallsCount || 0}/3 стен вокруг)
-                </div>
-              )}
+                  {hud.campfireStatus === 'lit_in_aura' && (
+                    <span
+                      data-testid="hud-campfire-aura-badge"
+                      className={`px-1.5 py-0.5 rounded border text-[10px] leading-none font-mono-num whitespace-nowrap ${
+                        hud.campfireSheltered
+                          ? 'bg-[#102a1d] border-[#4ade80] text-[#bbf7d0]'
+                          : 'bg-[#2a160d] border-[#f97316] text-[#fed7aa]'
+                      }`}
+                    >
+                      {hud.campfireSheltered ? '🔥 ×2' : '🔥 +ОЗ'}
+                    </span>
+                  )}
 
-              {/* Active Cooked Rat Food Buff Indicator */}
-              {hud.activeFoodBuff && (
-                <div className="px-2 py-1 rounded-lg bg-[#132a1f] border border-[#22c55e] text-[11px] font-mono-num text-[#bbf7d0] flex items-center justify-between">
-                  <span>
-                    🍖 +{hud.activeFoodBuff.bonusMaxHp} ОЗ · +{hud.activeFoodBuff.hpRegenPerSec}/с
-                  </span>
-                  <span>{Math.ceil(hud.activeFoodBuff.remainingSec)}с</span>
-                </div>
-              )}
+                  {hud.campfireStatus === 'unlit_nearby' && (
+                    <span className="px-1.5 py-0.5 rounded border bg-[#241f10] border-[#f59e0b] text-[10px] leading-none font-mono-num text-[#fde047] whitespace-nowrap">
+                      🪵 [1]
+                    </span>
+                  )}
 
-              {/* Active Roasted Bat Food Buff Indicator */}
-              {hud.activeBatFoodBuff && (
-                <div className="px-2 py-1 rounded-lg bg-[#131d31] border border-[#38bdf8] text-[11px] font-mono-num text-[#bae6fd] flex items-center justify-between">
-                  <span>
-                    🦇 +{hud.activeBatFoodBuff.bonusMaxMp} МП · +{hud.activeBatFoodBuff.mpRegenPerSec}/с
-                  </span>
-                  <span>{Math.ceil(hud.activeBatFoodBuff.remainingSec)}с</span>
-                </div>
-              )}
+                  {hud.activeFoodBuff && (
+                    <span className="px-1.5 py-0.5 rounded border bg-[#132a1f] border-[#22c55e] text-[10px] leading-none font-mono-num text-[#bbf7d0] whitespace-nowrap">
+                      🍖 {Math.ceil(hud.activeFoodBuff.remainingSec)}с
+                    </span>
+                  )}
 
-              {/* Active Summoned Elemental Ally (Water Helper or Snowman) */}
-              {hud.activeElementalAlly && (
-                <div className="px-2 py-1 rounded-lg bg-[#162336] border border-[#38bdf8] text-[11px] font-mono-num text-[#bae6fd] flex items-center justify-between">
-                  <span>
-                    {hud.activeElementalAlly.kind === 'water_spirit' ? '💧' : '⛄'}{' '}
-                    {hud.activeElementalAlly.name} ({hud.activeElementalAlly.attackDamage})
-                  </span>
-                  <span>{Math.ceil(hud.activeElementalAlly.remainingSec)}с</span>
-                </div>
-              )}
+                  {hud.activeBatFoodBuff && (
+                    <span className="px-1.5 py-0.5 rounded border bg-[#131d31] border-[#38bdf8] text-[10px] leading-none font-mono-num text-[#bae6fd] whitespace-nowrap">
+                      🦇 {Math.ceil(hud.activeBatFoodBuff.remainingSec)}с
+                    </span>
+                  )}
 
-              {/* Active Summoned Arcane Sword Indicator ([8] Меч) */}
-              {hud.activeArcaneSword && (
-                <div
-                  data-testid="hud-arcane-sword-badge"
-                  className="px-2 py-1 rounded-lg bg-[#271c0c] border border-[#fbbf24] text-[11px] font-mono-num text-[#fde047] flex items-center justify-between"
-                >
-                  <span>
-                    ⚔️ Меч ({hud.activeArcaneSword.damage} ур.) · [ПКМ ←/→]
-                  </span>
-                  <span>{hud.activeArcaneSword.remainingSec.toFixed(1)}с</span>
-                </div>
-              )}
+                  {hud.activeElementalAlly && (
+                    <span className="px-1.5 py-0.5 rounded border bg-[#162336] border-[#38bdf8] text-[10px] leading-none font-mono-num text-[#bae6fd] whitespace-nowrap">
+                      {hud.activeElementalAlly.kind === 'water_spirit' ? '💧' : '⛄'}{' '}
+                      {Math.ceil(hud.activeElementalAlly.remainingSec)}с
+                    </span>
+                  )}
 
-              {/* Cave Bear Fear Roar Status Indicator */}
-              {hud.playerFearTimeLeft > 0.05 && (
-                <div
-                  data-testid="hud-fear-badge"
-                  className="px-2 py-1 rounded-lg bg-[#31101b] border border-[#f43f5e] text-[11px] font-mono-num text-[#fda4af] flex items-center justify-between animate-pulse"
-                >
-                  <span>🐻 Рёв Страха (бег назад!)</span>
-                  <span>{hud.playerFearTimeLeft.toFixed(1)}с</span>
+                  {hud.activeArcaneSword && (
+                    <span
+                      data-testid="hud-arcane-sword-badge"
+                      className="px-1.5 py-0.5 rounded border bg-[#271c0c] border-[#fbbf24] text-[10px] leading-none font-mono-num text-[#fde047] whitespace-nowrap"
+                    >
+                      ⚔️ {Math.ceil(hud.activeArcaneSword.remainingSec)}с
+                    </span>
+                  )}
+
+                  {hud.playerFearTimeLeft > 0.05 && (
+                    <span
+                      data-testid="hud-fear-badge"
+                      className="px-1.5 py-0.5 rounded border bg-[#31101b] border-[#f43f5e] text-[10px] leading-none font-mono-num text-[#fda4af] whitespace-nowrap animate-pulse"
+                    >
+                      🐻 {Math.ceil(hud.playerFearTimeLeft)}с
+                    </span>
+                  )}
                 </div>
               )}
             </div>
@@ -4376,11 +4416,7 @@ export default function App() {
           {hudHideStep < 1 && (
             <div
               data-testid="hud-top-right-panel"
-              className={`absolute flex items-center pointer-events-auto ${
-                controlScheme === 'mobile'
-                  ? 'top-2.5 right-2.5 sm:top-3 sm:right-3 gap-1.5 sm:gap-2'
-                  : 'top-4 right-4 gap-2'
-              }`}
+              className="absolute top-2.5 right-2.5 sm:top-3 sm:right-3 flex items-center gap-1.5 sm:gap-2 pointer-events-auto"
             >
               {controlScheme !== 'mobile' && (
                 <button
@@ -4391,7 +4427,7 @@ export default function App() {
                     handlePushToTalkTrigger();
                   }}
                   aria-label="Сказать заклинание в микрофон [R]"
-                  className={`px-3.5 h-10 rounded-xl border text-xs font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                  className={`h-8 sm:h-9 px-2 sm:px-2.5 rounded-xl border text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                     micListening
                       ? 'bg-[#ef4444] border-[#fca5a5] text-white animate-pulse'
                       : 'bg-[#14111f] hover:bg-[#231e36] border-[#f59e0b] text-[#fde047]'
@@ -4401,7 +4437,7 @@ export default function App() {
                 </button>
               )}
 
-              {/* Single Unified Construction Tab (`Строительство`) with Dropdown for Campfire [C], Wall [B], and Aim-Based Dismantle [N] */}
+              {/* Minimal Construction Tab (`🏗️ Строить`) with Dropdown for Campfire [C], Wall [B], and Aim-Based Dismantle [N] */}
               <div className="relative">
                 <button
                   type="button"
@@ -4411,18 +4447,14 @@ export default function App() {
                     e.currentTarget.blur();
                     setBuildMenuOpen((prev) => !prev);
                   }}
-                  aria-label="Открыть вкладку Строительство (Костёр, Стена, Сломать)"
-                  className={`px-3.5 h-10 rounded-xl border text-xs font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
+                  aria-label="Открыть вкладку Строить (Костёр, Стена, Сломать)"
+                  className={`h-8 sm:h-9 px-2 sm:px-2.5 rounded-xl border text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0 flex items-center gap-1 ${
                     buildMenuOpen
                       ? 'bg-[#f59e0b] border-[#fde047] text-[#09080d] shadow-lg'
                       : 'border-[#fbbf24] bg-[#21180d] hover:bg-[#332514] text-[#fde68a]'
                   }`}
                 >
-                  <span>🏗️</span>
-                  <span>Строительство</span>
-                  <span className="text-[10px] font-mono-num opacity-85">
-                    ({hud.builtWallsCount || 0}/{MAX_BUILT_WALLS}) {buildMenuOpen ? '▲' : '▼'}
-                  </span>
+                  <span>🏗️ Строить</span>
                 </button>
 
                 {buildMenuOpen && (
@@ -4511,11 +4543,11 @@ export default function App() {
                   worldRef.current?.setMode('paused');
                   worldRef.current?.pushHudSnapshot();
                 }}
-                className="px-3 h-10 rounded-xl border border-[#38bdf8] bg-[#101c29] hover:bg-[#16283b] text-[#bae6fd] text-xs font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0 flex items-center gap-1.5"
+                className="h-8 sm:h-9 px-2 sm:px-2.5 rounded-xl border border-[#38bdf8] bg-[#101c29] hover:bg-[#16283b] text-[#bae6fd] text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0 flex items-center gap-1"
               >
                 <span>{controlScheme === 'mobile' ? '🎒 Инвентарь' : '🎒 Инвентарь [I]'}</span>
                 {readyToClaimQuestsCount > 0 && (
-                  <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-[#22c55e] text-[#09080d] animate-pulse">
+                  <span className="px-1 py-0.5 text-[9px] font-bold rounded bg-[#22c55e] text-[#09080d] animate-pulse">
                     +{readyToClaimQuestsCount}
                   </span>
                 )}
@@ -4532,9 +4564,9 @@ export default function App() {
                   e.currentTarget.blur();
                   handleTogglePause();
                 }}
-                className="w-10 h-10 rounded-xl border border-[#3b3154] bg-[#14111f] hover:bg-[#231e36] flex items-center justify-center text-[#fde047] cursor-pointer shrink-0"
+                className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl border border-[#3b3154] bg-[#14111f] hover:bg-[#231e36] flex items-center justify-center text-[#fde047] cursor-pointer shrink-0"
               >
-                <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2">
+                <svg viewBox="0 0 24 24" className="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" strokeWidth="2">
                   <circle cx="12" cy="12" r="8.5" stroke="#c4b5fd" strokeWidth="1.6" />
                   <rect x="9" y="8" width="2.2" height="8" rx="0.8" fill="#fde047" stroke="none" />
                   <rect x="12.8" y="8" width="2.2" height="8" rx="0.8" fill="#fde047" stroke="none" />
@@ -4946,10 +4978,30 @@ export default function App() {
           {/* MOBILE TOUCH CONTROLS OVERLAY (Rendered ONLY when controlScheme === 'mobile') */}
           {controlScheme === 'mobile' && (
             <>
+              {/* Compact Mobile HUD-Hide Toggle (Always accessible even at hudHideStep === 4 at low opacity) */}
+              <button
+                type="button"
+                tabIndex={-1}
+                data-testid="mobile-hud-visibility-toggle"
+                aria-label={hudHideStep < 4 ? 'Скрыть интерфейс' : 'Вернуть интерфейс'}
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  setHudHideStep((prev) => ((prev + 1) % 5) as 0 | 1 | 2 | 3 | 4);
+                }}
+                className={`fixed z-30 h-7 px-2 rounded-lg border border-[#3b3154] bg-[#14111f]/85 text-[10px] font-mono-num font-bold text-[#cbd5e1] pointer-events-auto touch-none select-none cursor-pointer transition-opacity whitespace-nowrap ${
+                  hudHideStep < 2
+                    ? 'top-2.5 left-2.5 sm:top-3 sm:left-[234px]'
+                    : 'top-2.5 left-2.5 sm:top-3 sm:left-3'
+                } ${hudHideStep === 4 ? 'opacity-45 hover:opacity-90' : 'opacity-90'}`}
+              >
+                {hudHideStep < 4 ? '👁️ Скрыть' : '👁️ Вернуть'}
+              </button>
+
               {mobileDrawMode && (
                 <div
                   data-testid="mobile-draw-hint"
-                  className="fixed top-[58px] left-1/2 -translate-x-1/2 z-30 px-4 py-1.5 rounded-full border-2 border-[#fde047] bg-[#2b1f10]/95 text-xs font-bold text-[#fde047] shadow-[0_0_20px_rgba(250,204,21,0.45)] pointer-events-none whitespace-nowrap"
+                  className="fixed top-[50px] sm:top-[52px] left-1/2 -translate-x-1/2 z-30 px-4 py-1.5 rounded-full border-2 border-[#fde047] bg-[#2b1f10]/95 text-xs font-bold text-[#fde047] shadow-[0_0_20px_rgba(250,204,21,0.45)] pointer-events-none whitespace-nowrap"
                 >
                   ✍️ Нарисуйте руну пальцем
                 </div>
@@ -4978,7 +5030,7 @@ export default function App() {
                 />
               </div>
 
-              {/* Bottom-Right Thumb Action Cluster */}
+              {/* Bottom-Right Thumb Action Cluster (All actions fire immediately in onPointerDown for true multi-touch while running) */}
               <div
                 data-testid="mobile-action-cluster"
                 onPointerDown={(e) => e.stopPropagation()}
@@ -4989,8 +5041,11 @@ export default function App() {
                     <button
                       type="button"
                       data-testid="mobile-interact-btn"
-                      onPointerDown={(e) => e.stopPropagation()}
-                      onClick={() => worldRef.current?.tryHarvestOrInteract()}
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        worldRef.current?.tryHarvestOrInteract();
+                      }}
                       className="w-[54px] h-[54px] rounded-full border-2 border-[#4ade80] bg-[#16a34a]/90 active:scale-95 text-white font-bold text-xs flex flex-col items-center justify-center leading-tight shadow-[0_0_16px_rgba(34,197,94,0.6)] cursor-pointer"
                     >
                       <span className="text-base leading-none">🖐️</span>
@@ -5001,8 +5056,11 @@ export default function App() {
                     type="button"
                     data-testid="mobile-voice-btn"
                     aria-label="Голосовой режим"
-                    onPointerDown={(e) => e.stopPropagation()}
-                    onClick={handleMobileVoiceToggle}
+                    onPointerDown={(e) => {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      handleMobileVoiceToggle();
+                    }}
                     className={`w-[56px] h-[56px] rounded-full border-2 active:scale-95 text-xl flex items-center justify-center transition-all cursor-pointer ${
                       micListening
                         ? 'bg-[#dc2626]/90 border-[#f87171] text-white shadow-[0_0_18px_rgba(239,68,68,0.7)] animate-pulse'
@@ -5017,14 +5075,15 @@ export default function App() {
                   <button
                     type="button"
                     data-testid="mobile-rune-btn"
-                    onPointerDown={(e) => e.stopPropagation()}
-                    onClick={() =>
+                    onPointerDown={(e) => {
+                      e.stopPropagation();
+                      e.preventDefault();
                       setMobileDrawMode((prev) => {
                         const next = !prev;
                         stateRef.current.mobileDrawMode = next;
                         return next;
-                      })
-                    }
+                      });
+                    }}
                     className={`w-[56px] h-[56px] rounded-full border-2 active:scale-95 font-bold flex flex-col items-center justify-center leading-tight transition-all cursor-pointer ${
                       mobileDrawMode
                         ? 'bg-[#422006]/95 border-[#fde047] text-[#fde047] shadow-[0_0_20px_rgba(250,204,21,0.7)]'
@@ -5038,8 +5097,11 @@ export default function App() {
                   <button
                     type="button"
                     data-testid="mobile-cast-btn"
-                    onPointerDown={(e) => e.stopPropagation()}
-                    onClick={handleMobileCastTap}
+                    onPointerDown={(e) => {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      handleMobileCastTap();
+                    }}
                     className="w-[64px] h-[64px] rounded-full border-2 border-[#fde047] bg-gradient-to-br from-[#f59e0b] to-[#ea580c] active:scale-95 text-white font-extrabold flex flex-col items-center justify-center leading-tight shadow-[0_0_22px_rgba(245,158,11,0.6)] cursor-pointer"
                   >
                     <span className="text-lg leading-none">⚡</span>
@@ -5059,7 +5121,7 @@ export default function App() {
                   : 'bottom-3 w-full max-w-[890px] px-4'
             }`}
           >
-            {/* [H] Visibility Hint Badge (PC mode full controls; compact/hidden overlap-free on mobile) */}
+            {/* [H] Visibility Hint Badge (PC mode full controls; mobile uses dedicated top-left 👁️ button) */}
             {controlScheme !== 'mobile' && (
               <div className="flex items-center gap-2">
                 <button
@@ -5100,6 +5162,8 @@ export default function App() {
                 spellCooldowns={hud.spellCooldowns}
                 onSelectSpell={handleSelectSpell}
                 compactMobile={controlScheme === 'mobile' || isNarrowViewport}
+                spellOrder={dockSpellOrder}
+                isMobileTouch={controlScheme === 'mobile'}
               />
             )}
           </div>
