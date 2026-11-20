@@ -134,6 +134,78 @@ const INITIAL_SPELL_LEVELS: Record<SpellId, number> = {
   cooldown_reset: 1,
 };
 
+const MOBILE_BOTTOM_SPELLS: SpellId[] = [
+  'incendio',
+  'glacius',
+  'expelliarmus',
+  'stupefy',
+  'wingardium',
+  'teleport',
+  'vera_verto',
+  'arcane_sword',
+  'cooldown_reset',
+];
+
+const MOBILE_CAST_SIDE_SPELLS: SpellId[] = ['campfire_teleport', 'engorgio'];
+
+function SpellRuneGlyphSvg({
+  spellId,
+  color,
+  svgPoints,
+  className,
+}: {
+  spellId: SpellId;
+  color: string;
+  svgPoints: string;
+  className: string;
+}) {
+  return (
+    <svg viewBox="0 0 36 36" className={className} aria-hidden="true">
+      {spellId === 'arcane_sword' ? (
+        <g>
+          <polygon
+            points="15.8,31.5 15.8,23 14.8,10 18,2.8 21.2,10 20.2,23 20.2,31.5"
+            fill="rgba(251, 191, 36, 0.28)"
+            stroke={color}
+            strokeWidth="2.3"
+            strokeLinejoin="round"
+          />
+          <line
+            x1="15.8"
+            y1="23"
+            x2="20.2"
+            y2="23"
+            stroke="rgba(245, 158, 11, 0.55)"
+            strokeWidth="1.4"
+            strokeDasharray="1.5 1.5"
+          />
+        </g>
+      ) : spellId === 'cooldown_reset' ? (
+        <g>
+          <polyline
+            points={svgPoints}
+            fill="rgba(45, 212, 191, 0.18)"
+            stroke={color}
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <circle cx="7" cy="5" r="2.2" fill="#fde047" />
+        </g>
+      ) : (
+        <polyline
+          points={svgPoints}
+          fill="none"
+          stroke={color}
+          strokeWidth="3"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      )}
+    </svg>
+  );
+}
+
 interface SpellDockGridProps {
   selectedSpellId: SpellId;
   spellLevels: Record<SpellId, number>;
@@ -194,9 +266,11 @@ const SpellDockGrid = memo(
           }
           onClick={useDirectPointerDown ? undefined : () => onSelectSpell(sp.id)}
           className={`relative overflow-hidden rounded-lg border flex flex-col items-center justify-center transition-all cursor-pointer ${
-            compactMobile
-              ? 'shrink-0 min-w-[54px] py-1.5 px-1.5 gap-0.5'
-              : 'py-2 px-1.5 gap-1'
+            isMobileTouch
+              ? 'min-w-0 py-1 px-0.5 gap-0.5'
+              : compactMobile
+                ? 'shrink-0 min-w-[54px] py-1.5 px-1.5 gap-0.5'
+                : 'py-2 px-1.5 gap-1'
           } ${
             isSelected
               ? 'bg-[#261f3d]'
@@ -213,67 +287,30 @@ const SpellDockGrid = memo(
             />
           )}
 
-          {!compactMobile && (
+          {!compactMobile && !isMobileTouch && (
             <span className="relative text-[11px] font-bold font-mono-num text-[#fde047] leading-none">
               [{hotkeyLabel}]
             </span>
           )}
 
-          <svg
-            viewBox="0 0 36 36"
-            className={`relative overflow-visible ${compactMobile ? 'w-5 h-5' : 'w-7 h-7'}`}
-            aria-hidden="true"
-          >
-            {sp.id === 'arcane_sword' ? (
-              <g>
-                <polygon
-                  points="15.8,31.5 15.8,23 14.8,10 18,2.8 21.2,10 20.2,23 20.2,31.5"
-                  fill="rgba(251, 191, 36, 0.28)"
-                  stroke={sp.color}
-                  strokeWidth="2.3"
-                  strokeLinejoin="round"
-                />
-                <line
-                  x1="15.8"
-                  y1="23"
-                  x2="20.2"
-                  y2="23"
-                  stroke="rgba(245, 158, 11, 0.55)"
-                  strokeWidth="1.4"
-                  strokeDasharray="1.5 1.5"
-                />
-              </g>
-            ) : sp.id === 'cooldown_reset' ? (
-              <g>
-                <polyline
-                  points={svgPoints}
-                  fill="rgba(45, 212, 191, 0.18)"
-                  stroke={sp.color}
-                  strokeWidth="2.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-                <circle cx="7" cy="5" r="2.2" fill="#fde047" />
-              </g>
-            ) : (
-              <polyline
-                points={svgPoints}
-                fill="none"
-                stroke={sp.color}
-                strokeWidth="3"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            )}
-          </svg>
+          <SpellRuneGlyphSvg
+            spellId={sp.id}
+            color={sp.color}
+            svgPoints={svgPoints}
+            className={`relative overflow-visible ${
+              isMobileTouch ? 'w-4 h-4 sm:w-5 sm:h-5' : compactMobile ? 'w-5 h-5' : 'w-7 h-7'
+            }`}
+          />
 
           <span
             className={`relative font-bold leading-none whitespace-nowrap ${
-              compactMobile
-                ? 'text-[9.5px] tracking-tighter'
-                : sp.shortWord.length > 8
-                ? 'text-[9.5px] tracking-tighter'
-                : 'text-xs'
+              isMobileTouch
+                ? 'text-[8px] sm:text-[9px] tracking-tighter max-w-full truncate px-0.5'
+                : compactMobile
+                  ? 'text-[9.5px] tracking-tighter'
+                  : sp.shortWord.length > 8
+                    ? 'text-[9.5px] tracking-tighter'
+                    : 'text-xs'
             }`}
             style={{ color: sp.color }}
           >
@@ -281,13 +318,26 @@ const SpellDockGrid = memo(
           </span>
 
           {onCooldown && (
-            <span className="absolute inset-0 flex items-center justify-center text-xs font-bold font-mono-num text-white hud-stroke">
+            <span className="absolute inset-0 flex items-center justify-center text-[10px] sm:text-xs font-bold font-mono-num text-white hud-stroke">
               {Math.ceil(cd)}с
             </span>
           )}
         </button>
       );
     };
+
+    if (isMobileTouch) {
+      return (
+        <div
+          data-testid="spell-dock-grid"
+          onPointerDown={(e) => e.stopPropagation()}
+          className="w-[calc(100vw-16px)] sm:w-[calc(100vw-206px)] max-w-[660px] grid grid-cols-9 gap-0.5 sm:gap-1 p-1 rounded-xl border border-[#3b3154] shadow-2xl touch-none"
+          style={{ backgroundColor: 'rgba(14, 12, 22, 0.9)' }}
+        >
+          {MOBILE_BOTTOM_SPELLS.map(renderSpellButton)}
+        </div>
+      );
+    }
 
     if (compactMobile) {
       return (
@@ -410,9 +460,7 @@ export default function App() {
   const [isNarrowViewport, setIsNarrowViewport] = useState<boolean>(() =>
     typeof window !== 'undefined' ? window.innerWidth < 768 : false
   );
-  const [graphicsQuality, setGraphicsQuality] = useState<GraphicsQuality>(() =>
-    isTouchDevice ? 'medium' : 'high'
-  );
+  const [graphicsQuality, setGraphicsQuality] = useState<GraphicsQuality>('high');
   const [controlScheme, setControlScheme] = useState<ControlSchemeId>(() => {
     try {
       const saved = localStorage.getItem('vox_arcanum_control_scheme_v1');
@@ -424,7 +472,6 @@ export default function App() {
       return isTouchDevice ? 'mobile' : 'alternative';
     }
   });
-  const [mobileDrawMode, setMobileDrawMode] = useState(false);
   const [joyKnobOffset, setJoyKnobOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [roomInputCode, setRoomInputCode] = useState('');
 
@@ -575,20 +622,10 @@ export default function App() {
   const activeLookPointerIdRef = useRef<number | null>(null);
   const lastLookPointerPosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const activeDrawPointerIdRef = useRef<number | null>(null);
-  const mobileDrawLastPosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
-  const mobileDrawDirectModeRef = useRef(false);
+  const lastDrawTouchPosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const mobileSwordDragAccXRef = useRef(0);
   const activeJoyPointerIdRef = useRef<number | null>(null);
   const joyBaseRef = useRef<HTMLDivElement | null>(null);
-
-  const dockSpellOrder = useMemo(
-    () =>
-      controlScheme === 'mobile'
-        ? SPELL_ORDER.map((id) =>
-            id === 'engorgio' ? 'teleport' : id === 'teleport' ? 'engorgio' : id
-          )
-        : SPELL_ORDER,
-    [controlScheme]
-  );
 
   useEffect(() => {
     const onResize = () => {
@@ -600,11 +637,13 @@ export default function App() {
 
   useEffect(() => {
     if (gameState !== 'playing' || grimoireOpen) {
-      setMobileDrawMode(false);
       setJoyKnobOffset({ x: 0, y: 0 });
       activeJoyPointerIdRef.current = null;
       activeLookPointerIdRef.current = null;
       activeDrawPointerIdRef.current = null;
+      isDrawingGestureRef.current = false;
+      isSwordSlashDragRef.current = false;
+      setIsTracingRune(false);
       worldRef.current?.setTouchMoveVector(0, 0);
     }
   }, [gameState, grimoireOpen]);
@@ -627,7 +666,6 @@ export default function App() {
     selfPlayerId,
     pvpPlayerName,
     controlScheme,
-    mobileDrawMode,
     reagentInventory,
     craftedPotions,
     cookedFoods,
@@ -651,7 +689,6 @@ export default function App() {
       selfPlayerId,
       pvpPlayerName,
       controlScheme,
-      mobileDrawMode,
       reagentInventory,
       craftedPotions,
       cookedFoods,
@@ -692,12 +729,13 @@ export default function App() {
     (scheme: ControlSchemeId) => {
       setControlScheme(scheme);
       stateRef.current.controlScheme = scheme;
-      setMobileDrawMode(false);
-      stateRef.current.mobileDrawMode = false;
       setJoyKnobOffset({ x: 0, y: 0 });
       activeJoyPointerIdRef.current = null;
       activeLookPointerIdRef.current = null;
       activeDrawPointerIdRef.current = null;
+      isDrawingGestureRef.current = false;
+      isSwordSlashDragRef.current = false;
+      setIsTracingRune(false);
       worldRef.current?.setTouchMoveVector(0, 0);
       worldRef.current?.setControlScheme(scheme);
       try {
@@ -1752,9 +1790,6 @@ export default function App() {
     });
 
     worldRef.current = engine;
-    if (isTouchDevice) {
-      engine.setGraphicsQuality('medium');
-    }
     engine.setLabyrinthMultiplayerMode(initialLabyrinthMpMode);
     engine.setControlScheme(stateRef.current.controlScheme);
     engine.setRadarEnabled(true);
@@ -2754,9 +2789,9 @@ export default function App() {
 
   useEffect(() => {
     if (gameState === 'playing') {
-      renderHudRuneOverlay(gesturePointsRef.current, isTracingRune || mobileDrawMode);
+      renderHudRuneOverlay(gesturePointsRef.current, isTracingRune);
     }
-  }, [gameState, hud.aimSurfaceTarget, isTracingRune, mobileDrawMode, renderHudRuneOverlay, selectedSpellId]);
+  }, [gameState, hud.aimSurfaceTarget, isTracingRune, renderHudRuneOverlay, selectedSpellId]);
 
   const handleViewportWheel = (e: React.WheelEvent<HTMLDivElement>) => {
     if (gameState !== 'playing' || grimoireOpen) return;
@@ -2781,7 +2816,7 @@ export default function App() {
     const cy = rect.top + rect.height / 2;
     const dx = clientX - cx;
     const dy = clientY - cy;
-    const maxRadius = 44;
+    const maxRadius = 36;
     const dist = Math.hypot(dx, dy);
     const scale = dist > maxRadius && dist > 0 ? maxRadius / dist : 1;
     const clampedX = dx * scale;
@@ -2842,66 +2877,182 @@ export default function App() {
     }
   };
 
+  // 1-Touch Press-and-Drag Rune Drawing anchored directly on the 3D wand crystal tip (works simultaneously with left joystick!)
+  const handleWandDrawPointerDown = (e: React.PointerEvent<HTMLButtonElement>) => {
+    e.stopPropagation();
+    e.preventDefault();
+    if (gameState !== 'playing' || grimoireOpen) return;
+    if (e.pointerId === activeJoyPointerIdRef.current) return;
+    if (activeDrawPointerIdRef.current !== null) return;
+
+    activeDrawPointerIdRef.current = e.pointerId;
+    lastDrawTouchPosRef.current = { x: e.clientX, y: e.clientY };
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // Ignore capture errors in synthetic test environments
+    }
+
+    // If Arcane Sword is active and selected, dragging left/right swings the sword
+    if (
+      worldRef.current?.hasActiveArcaneSword() &&
+      stateRef.current.selectedSpellId === 'arcane_sword'
+    ) {
+      isSwordSlashDragRef.current = true;
+      mobileSwordDragAccXRef.current = 0;
+      swordSlashFiredDuringDragRef.current = false;
+      return;
+    }
+
+    isDrawingGestureRef.current = true;
+    setIsTracingRune(true);
+    const canvas = gestureOverlayCanvasRef.current;
+    if (canvas) {
+      const gestureInfo = getActiveSpellGestureInfo(
+        stateRef.current.selectedSpellId,
+        hud.aimSurfaceTarget
+      );
+      const first = gestureInfo.templatePoints[0] || { x: 0.5, y: 0.2 };
+      const startPt: Point2D = {
+        x: first.x * canvas.width,
+        y: first.y * canvas.height,
+      };
+      altVirtualPenRef.current = { ...startPt };
+      gesturePointsRef.current = [{ ...startPt }];
+      renderHudRuneOverlay(gesturePointsRef.current, true);
+      worldRef.current?.setWandGestureTraceOffset(first.x, first.y);
+    }
+  };
+
+  const handleWandDrawPointerMove = (e: React.PointerEvent<HTMLButtonElement>) => {
+    e.stopPropagation();
+    if (e.pointerId !== activeDrawPointerIdRef.current) return;
+
+    const dx = e.clientX - lastDrawTouchPosRef.current.x;
+    const dy = e.clientY - lastDrawTouchPosRef.current.y;
+    lastDrawTouchPosRef.current = { x: e.clientX, y: e.clientY };
+
+    if (
+      isSwordSlashDragRef.current ||
+      (worldRef.current?.hasActiveArcaneSword() &&
+        stateRef.current.selectedSpellId === 'arcane_sword')
+    ) {
+      mobileSwordDragAccXRef.current += dx;
+      if (Math.abs(mobileSwordDragAccXRef.current) >= 16) {
+        const dir: 1 | -1 = mobileSwordDragAccXRef.current >= 0 ? 1 : -1;
+        mobileSwordDragAccXRef.current = 0;
+        swordSlashFiredDuringDragRef.current = true;
+        worldRef.current?.swingArcaneSword(dir);
+      }
+      return;
+    }
+
+    if (!isDrawingGestureRef.current) return;
+    const canvas = gestureOverlayCanvasRef.current;
+    if (canvas) {
+      altVirtualPenRef.current.x = Math.max(
+        -16,
+        Math.min(canvas.width + 16, altVirtualPenRef.current.x + dx * 1.15)
+      );
+      altVirtualPenRef.current.y = Math.max(
+        -16,
+        Math.min(canvas.height + 16, altVirtualPenRef.current.y + dy * 1.15)
+      );
+      const x = altVirtualPenRef.current.x;
+      const y = altVirtualPenRef.current.y;
+      gesturePointsRef.current.push({ x, y });
+      renderHudRuneOverlay(gesturePointsRef.current, true);
+      worldRef.current?.setWandGestureTraceOffset(x / canvas.width, y / canvas.height);
+    }
+  };
+
+  const handleWandDrawPointerUp = (e: React.PointerEvent<HTMLButtonElement>) => {
+    e.stopPropagation();
+    if (e.pointerId !== activeDrawPointerIdRef.current) return;
+
+    try {
+      if (e.currentTarget.hasPointerCapture?.(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+    } catch {
+      // Ignore release errors
+    }
+
+    activeDrawPointerIdRef.current = null;
+
+    if (isSwordSlashDragRef.current) {
+      isSwordSlashDragRef.current = false;
+      if (!swordSlashFiredDuringDragRef.current) {
+        const dir = altSwordNextHandRef.current;
+        altSwordNextHandRef.current = dir === 1 ? -1 : 1;
+        worldRef.current?.swingArcaneSword(dir);
+      }
+      swordSlashFiredDuringDragRef.current = false;
+      return;
+    }
+
+    isDrawingGestureRef.current = false;
+    setIsTracingRune(false);
+    worldRef.current?.setWandGestureTraceOffset(0.5, 0.5);
+
+    const pts = gesturePointsRef.current;
+    gesturePointsRef.current = [];
+    renderHudRuneOverlay([], false);
+
+    let strokeLenPx = 0;
+    for (let i = 1; i < pts.length; i++) {
+      strokeLenPx += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+    }
+
+    if (pts.length >= 2 && strokeLenPx >= 16) {
+      const equip = EQUIPMENT_CATALOG[equippedStaffId];
+      const recentVoice =
+        pendingVoiceSpellRef.current &&
+        performance.now() - pendingVoiceSpellRef.current.timestamp < 4000
+          ? pendingVoiceSpellRef.current
+          : null;
+
+      const targetSpellId = recentVoice ? recentVoice.spellId : selectedSpellId;
+      const gestureInfo = getActiveSpellGestureInfo(targetSpellId, hud.aimSurfaceTarget);
+      const evalRes =
+        gestureInfo.isContextual && gestureInfo.contextId
+          ? evaluateContextualGesture(
+              pts,
+              gestureInfo.contextId,
+              gestureMasteryLevel * 3 + equip.gestureForgiveness
+            )
+          : evaluateGestureAccuracy(
+              pts,
+              targetSpellId,
+              gestureMasteryLevel * 3,
+              equip.gestureForgiveness
+            );
+
+      triggerSpellCast({
+        spellId: targetSpellId,
+        castMode: recentVoice ? 'voice_and_drawn' : 'drawn',
+        gestureAccuracy: evalRes.accuracy,
+        voiceMatched: Boolean(recentVoice),
+        voiceQuality: recentVoice?.quality ?? 95,
+        spokenLabel: SPELLS[targetSpellId].shortWord,
+      });
+      pendingVoiceSpellRef.current = null;
+    }
+  };
+
   const handleViewportPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (activeJoyPointerIdRef.current !== null && e.pointerId === activeJoyPointerIdRef.current) {
+    if (
+      (activeJoyPointerIdRef.current !== null && e.pointerId === activeJoyPointerIdRef.current) ||
+      (activeDrawPointerIdRef.current !== null && e.pointerId === activeDrawPointerIdRef.current)
+    ) {
       return;
     }
     if (gameState !== 'playing' || grimoireOpen) return;
 
-    // Mobile Touch Control Scheme: separate pointer IDs for multi-touch camera look & 1-stroke rune drawing
+    // Mobile Touch Control Scheme: separate pointer ID for multi-touch camera look (rune drawing is handled 1-touch on the wand crystal button)
     if (stateRef.current.controlScheme === 'mobile') {
-      if (e.pointerId === activeJoyPointerIdRef.current) return;
       e.preventDefault();
       if (showControlsHelp) setShowControlsHelp(false);
-
-      if (stateRef.current.mobileDrawMode) {
-        if (activeDrawPointerIdRef.current !== null) return;
-        activeDrawPointerIdRef.current = e.pointerId;
-        isDrawingGestureRef.current = true;
-        setIsTracingRune(true);
-        try {
-          e.currentTarget.setPointerCapture(e.pointerId);
-        } catch {
-          // Ignore capture errors
-        }
-        const canvas = gestureOverlayCanvasRef.current;
-        if (canvas) {
-          const rect = canvas.getBoundingClientRect();
-          const insideCanvas =
-            e.clientX >= rect.left &&
-            e.clientX <= rect.right &&
-            e.clientY >= rect.top &&
-            e.clientY <= rect.bottom;
-          mobileDrawDirectModeRef.current = insideCanvas;
-          mobileDrawLastPosRef.current = { x: e.clientX, y: e.clientY };
-
-          let startPt: Point2D;
-          if (insideCanvas && rect.width > 0 && rect.height > 0) {
-            startPt = {
-              x: ((e.clientX - rect.left) / rect.width) * canvas.width,
-              y: ((e.clientY - rect.top) / rect.height) * canvas.height,
-            };
-          } else {
-            const gestureInfo = getActiveSpellGestureInfo(
-              stateRef.current.selectedSpellId,
-              hud.aimSurfaceTarget
-            );
-            const first = gestureInfo.templatePoints[0] || { x: 0.5, y: 0.2 };
-            startPt = {
-              x: first.x * canvas.width,
-              y: first.y * canvas.height,
-            };
-          }
-          altVirtualPenRef.current = { ...startPt };
-          gesturePointsRef.current = [startPt];
-          renderHudRuneOverlay(gesturePointsRef.current, true);
-          worldRef.current?.setWandGestureTraceOffset(
-            startPt.x / canvas.width,
-            startPt.y / canvas.height
-          );
-        }
-        return;
-      }
 
       if (activeLookPointerIdRef.current === null) {
         activeLookPointerIdRef.current = e.pointerId;
@@ -2997,45 +3148,15 @@ export default function App() {
   };
 
   const handleViewportPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (activeJoyPointerIdRef.current !== null && e.pointerId === activeJoyPointerIdRef.current) {
+    if (
+      (activeJoyPointerIdRef.current !== null && e.pointerId === activeJoyPointerIdRef.current) ||
+      (activeDrawPointerIdRef.current !== null && e.pointerId === activeDrawPointerIdRef.current)
+    ) {
       return;
     }
     if (gameState !== 'playing' || grimoireOpen) return;
 
     if (stateRef.current.controlScheme === 'mobile') {
-      if (e.pointerId === activeJoyPointerIdRef.current) return;
-
-      if (activeDrawPointerIdRef.current === e.pointerId && isDrawingGestureRef.current) {
-        const canvas = gestureOverlayCanvasRef.current;
-        if (canvas) {
-          let x: number;
-          let y: number;
-          if (mobileDrawDirectModeRef.current) {
-            const rect = canvas.getBoundingClientRect();
-            x = ((e.clientX - rect.left) / Math.max(1, rect.width)) * canvas.width;
-            y = ((e.clientY - rect.top) / Math.max(1, rect.height)) * canvas.height;
-          } else {
-            const dx = e.clientX - mobileDrawLastPosRef.current.x;
-            const dy = e.clientY - mobileDrawLastPosRef.current.y;
-            mobileDrawLastPosRef.current = { x: e.clientX, y: e.clientY };
-            altVirtualPenRef.current.x = Math.max(
-              -16,
-              Math.min(canvas.width + 16, altVirtualPenRef.current.x + dx)
-            );
-            altVirtualPenRef.current.y = Math.max(
-              -16,
-              Math.min(canvas.height + 16, altVirtualPenRef.current.y + dy)
-            );
-            x = altVirtualPenRef.current.x;
-            y = altVirtualPenRef.current.y;
-          }
-          gesturePointsRef.current.push({ x, y });
-          renderHudRuneOverlay(gesturePointsRef.current, true);
-          worldRef.current?.setWandGestureTraceOffset(x / canvas.width, y / canvas.height);
-        }
-        return;
-      }
-
       if (activeLookPointerIdRef.current === e.pointerId) {
         const dx = e.clientX - lastLookPointerPosRef.current.x;
         const dy = e.clientY - lastLookPointerPosRef.current.y;
@@ -3171,66 +3292,15 @@ export default function App() {
   };
 
   const handleViewportPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (activeJoyPointerIdRef.current !== null && e.pointerId === activeJoyPointerIdRef.current) {
+    if (
+      (activeJoyPointerIdRef.current !== null && e.pointerId === activeJoyPointerIdRef.current) ||
+      (activeDrawPointerIdRef.current !== null && e.pointerId === activeDrawPointerIdRef.current)
+    ) {
       return;
     }
     if (stateRef.current.controlScheme === 'mobile') {
       if (e.pointerId === activeLookPointerIdRef.current) {
         activeLookPointerIdRef.current = null;
-        return;
-      }
-      if (e.pointerId === activeDrawPointerIdRef.current) {
-        activeDrawPointerIdRef.current = null;
-        isDrawingGestureRef.current = false;
-        setIsTracingRune(false);
-        setMobileDrawMode(false);
-        stateRef.current.mobileDrawMode = false;
-        worldRef.current?.setWandGestureTraceOffset(0.5, 0.5);
-
-        const pts = gesturePointsRef.current;
-        gesturePointsRef.current = [];
-        renderHudRuneOverlay([], false);
-
-        let strokeLenPx = 0;
-        for (let i = 1; i < pts.length; i++) {
-          strokeLenPx += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
-        }
-
-        if (pts.length >= 3 && strokeLenPx >= 18) {
-          const equip = EQUIPMENT_CATALOG[equippedStaffId];
-          const recentVoice =
-            pendingVoiceSpellRef.current &&
-            performance.now() - pendingVoiceSpellRef.current.timestamp < 4000
-              ? pendingVoiceSpellRef.current
-              : null;
-
-          const targetSpellId = recentVoice ? recentVoice.spellId : selectedSpellId;
-          const gestureInfo = getActiveSpellGestureInfo(targetSpellId, hud.aimSurfaceTarget);
-          const evalRes =
-            gestureInfo.isContextual && gestureInfo.contextId
-              ? evaluateContextualGesture(
-                  pts,
-                  gestureInfo.contextId,
-                  gestureMasteryLevel * 3 + equip.gestureForgiveness
-                )
-              : evaluateGestureAccuracy(
-                  pts,
-                  targetSpellId,
-                  gestureMasteryLevel * 3,
-                  equip.gestureForgiveness
-                );
-
-          triggerSpellCast({
-            spellId: targetSpellId,
-            castMode: recentVoice ? 'voice_and_drawn' : 'drawn',
-            gestureAccuracy: evalRes.accuracy,
-            voiceMatched: Boolean(recentVoice),
-            voiceQuality: recentVoice?.quality ?? 95,
-            spokenLabel: SPELLS[targetSpellId].shortWord,
-          });
-          pendingVoiceSpellRef.current = null;
-        }
-        return;
       }
       return;
     }
@@ -4636,14 +4706,23 @@ export default function App() {
             )}
           </div>
 
-          {/* SEPARATE STATUS BANNERS CONTAINER BELOW THE CENTER CANVAS (Never shifts the rune contour!) */}
+          {/* SEPARATE STATUS BANNERS CONTAINER BELOW THE CENTER CANVAS (Raised above bottom spell dock on mobile!) */}
           {hudHideStep < 4 && (
-            <div className="fixed left-1/2 top-[calc(50%+114px)] -translate-x-1/2 flex flex-col items-center pointer-events-none">
+            <div
+              data-testid="hud-status-banners"
+              className={
+                controlScheme === 'mobile'
+                  ? 'fixed left-1/2 bottom-[174px] sm:bottom-[84px] -translate-x-1/2 z-30 max-w-[85vw] flex flex-col items-center pointer-events-none'
+                  : 'fixed left-1/2 top-[calc(50%+114px)] -translate-x-1/2 flex flex-col items-center pointer-events-none'
+              }
+            >
 
               {/* Contextual Water / Snow Gesture Indicator */}
               {hud.aimSurfaceTarget !== 'none' && (
                 <div
-                  className="mt-1 px-3 py-1 rounded-lg border border-[#38bdf8] text-[11px] font-bold text-[#bae6fd] whitespace-nowrap"
+                  className={`mt-1 px-3 py-1 rounded-lg border border-[#38bdf8] text-[11px] font-bold text-[#bae6fd] ${
+                    controlScheme === 'mobile' ? 'max-w-full text-center' : 'whitespace-nowrap'
+                  }`}
                   style={{ backgroundColor: 'rgba(12, 22, 36, 0.92)' }}
                 >
                   {hud.aimSurfaceTarget === 'water'
@@ -4818,9 +4897,25 @@ export default function App() {
               {/* Nearby Tame / Harvest / Loot Prompt ([E]) */}
               {hud.nearbyInteractPrompt && !hud.openChestPreview && (
                 <div
-                  className="mt-1.5 px-3.5 py-1.5 rounded-lg border border-[#f59e0b] text-xs font-bold text-[#fde047] pointer-events-auto cursor-pointer whitespace-nowrap"
+                  data-testid="hud-nearby-interact-prompt"
+                  className={`mt-1.5 px-3.5 py-1.5 rounded-lg border border-[#f59e0b] text-xs font-bold text-[#fde047] pointer-events-auto cursor-pointer ${
+                    controlScheme === 'mobile' ? 'max-w-full text-center' : 'whitespace-nowrap'
+                  }`}
                   style={{ backgroundColor: 'rgba(14, 12, 22, 0.92)' }}
-                  onClick={() => worldRef.current?.tryHarvestOrInteract()}
+                  onPointerDown={
+                    controlScheme === 'mobile'
+                      ? (e) => {
+                          e.stopPropagation();
+                          e.preventDefault();
+                          worldRef.current?.tryHarvestOrInteract();
+                        }
+                      : undefined
+                  }
+                  onClick={
+                    controlScheme === 'mobile'
+                      ? undefined
+                      : () => worldRef.current?.tryHarvestOrInteract()
+                  }
                 >
                   {hud.nearbyInteractPrompt}
                 </div>
@@ -4829,7 +4924,9 @@ export default function App() {
               {/* Celebratory Quest Completed Banner (Click to open Quests tab & claim reward!) */}
               {questCompletedBanner && (
                 <div
-                  className="mt-1.5 px-4 py-1.5 rounded-lg border-2 border-[#22c55e] text-xs font-bold text-[#bbf7d0] shadow-lg pointer-events-auto cursor-pointer animate-pulse whitespace-nowrap"
+                  className={`mt-1.5 px-4 py-1.5 rounded-lg border-2 border-[#22c55e] text-xs font-bold text-[#bbf7d0] shadow-lg pointer-events-auto cursor-pointer animate-pulse ${
+                    controlScheme === 'mobile' ? 'max-w-full text-center' : 'whitespace-nowrap'
+                  }`}
                   style={{ backgroundColor: 'rgba(15, 38, 26, 0.95)' }}
                   onClick={() => {
                     setQuestCompletedBanner(null);
@@ -4846,7 +4943,10 @@ export default function App() {
               {/* Toast Notification */}
               {toastMessage && (
                 <div
-                  className="mt-1.5 px-3.5 py-1 rounded-lg border border-[#22c55e] text-xs font-semibold text-[#bbf7d0] whitespace-nowrap"
+                  data-testid="hud-toast-banner"
+                  className={`mt-1.5 px-3.5 py-1 rounded-lg border border-[#22c55e] text-xs font-semibold text-[#bbf7d0] ${
+                    controlScheme === 'mobile' ? 'max-w-full text-center' : 'whitespace-nowrap'
+                  }`}
                   style={{ backgroundColor: 'rgba(14, 12, 22, 0.92)' }}
                 >
                   {toastMessage}
@@ -4998,16 +5098,48 @@ export default function App() {
                 {hudHideStep < 4 ? '👁️ Скрыть' : '👁️ Вернуть'}
               </button>
 
-              {mobileDrawMode && (
-                <div
-                  data-testid="mobile-draw-hint"
-                  className="fixed top-[50px] sm:top-[52px] left-1/2 -translate-x-1/2 z-30 px-4 py-1.5 rounded-full border-2 border-[#fde047] bg-[#2b1f10]/95 text-xs font-bold text-[#fde047] shadow-[0_0_20px_rgba(250,204,21,0.45)] pointer-events-none whitespace-nowrap"
+              {/* 1-Touch Rune Drawing Trigger anchored directly on the glowing 3D wand crystal tip */}
+              {hudHideStep < 4 && (
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  data-testid="mobile-wand-draw-btn"
+                  aria-label="Рисовать руну одним нажатием и ведением"
+                  onPointerDown={handleWandDrawPointerDown}
+                  onPointerMove={handleWandDrawPointerMove}
+                  onPointerUp={handleWandDrawPointerUp}
+                  onPointerCancel={handleWandDrawPointerUp}
+                  className={`fixed left-[61%] top-[44%] -translate-x-1/2 -translate-y-1/2 z-[25] w-11 h-11 rounded-full border-2 flex items-center justify-center text-lg pointer-events-auto touch-none select-none cursor-pointer transition-all ${
+                    isTracingRune
+                      ? 'bg-[#422006]/85 border-[#fde047] text-[#fde047] scale-110 shadow-[0_0_22px_rgba(250,204,21,0.85)]'
+                      : 'bg-[#14111f]/45 border-[#fde047]/65 text-[#fde68a] shadow-[0_0_14px_rgba(250,204,21,0.35)] backdrop-blur-[2px]'
+                  }`}
                 >
-                  ✍️ Нарисуйте руну пальцем
-                </div>
+                  ✍️
+                </button>
               )}
 
-              {/* Bottom-Left Virtual Joystick (120x120px base + 46x46px thumb knob) */}
+              {/* Mobile Microphone Button anchored directly over the right hand fist gripping the wand */}
+              <button
+                type="button"
+                tabIndex={-1}
+                data-testid="mobile-voice-btn"
+                aria-label="Голосовой режим"
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  handleMobileVoiceToggle();
+                }}
+                className={`fixed left-[72%] bottom-[26%] -translate-x-1/2 z-[25] w-11 h-11 rounded-full border-2 active:scale-95 text-lg flex items-center justify-center pointer-events-auto touch-none select-none transition-all cursor-pointer ${
+                  micListening
+                    ? 'bg-[#dc2626]/90 border-[#f87171] text-white shadow-[0_0_18px_rgba(239,68,68,0.8)] animate-pulse'
+                    : 'bg-[#14111f]/55 border-[#c4b5fd]/60 text-[#e2d9f3] shadow-lg backdrop-blur-[2px]'
+                }`}
+              >
+                🎤
+              </button>
+
+              {/* Bottom-Left Virtual Joystick (compact 100x100px base + 40x40px thumb knob) */}
               <div
                 ref={joyBaseRef}
                 data-testid="mobile-virtual-joystick"
@@ -5015,99 +5147,116 @@ export default function App() {
                 onPointerMove={handleJoystickPointerMove}
                 onPointerUp={handleJoystickPointerUp}
                 onPointerCancel={handleJoystickPointerUp}
-                className="fixed bottom-4 left-4 z-20 w-[120px] h-[120px] rounded-full border-2 border-[#38bdf8]/45 bg-[#0e0c16]/55 backdrop-blur-sm flex items-center justify-center pointer-events-auto touch-none select-none shadow-[0_0_24px_rgba(0,0,0,0.45)]"
+                className="fixed bottom-2 left-2 z-20 w-[100px] h-[100px] rounded-full border-2 border-[#38bdf8]/45 bg-[#0e0c16]/55 backdrop-blur-sm flex items-center justify-center pointer-events-auto touch-none select-none shadow-[0_0_24px_rgba(0,0,0,0.45)]"
               >
-                <div className="absolute top-2 w-1.5 h-1.5 rounded-full bg-[#38bdf8]/45 pointer-events-none" />
-                <div className="absolute bottom-2 w-1.5 h-1.5 rounded-full bg-[#38bdf8]/45 pointer-events-none" />
-                <div className="absolute left-2 w-1.5 h-1.5 rounded-full bg-[#38bdf8]/45 pointer-events-none" />
-                <div className="absolute right-2 w-1.5 h-1.5 rounded-full bg-[#38bdf8]/45 pointer-events-none" />
+                <div className="absolute top-1.5 w-1.5 h-1.5 rounded-full bg-[#38bdf8]/45 pointer-events-none" />
+                <div className="absolute bottom-1.5 w-1.5 h-1.5 rounded-full bg-[#38bdf8]/45 pointer-events-none" />
+                <div className="absolute left-1.5 w-1.5 h-1.5 rounded-full bg-[#38bdf8]/45 pointer-events-none" />
+                <div className="absolute right-1.5 w-1.5 h-1.5 rounded-full bg-[#38bdf8]/45 pointer-events-none" />
                 <div
                   data-testid="mobile-joystick-knob"
-                  className="w-[46px] h-[46px] rounded-full bg-gradient-to-br from-[#38bdf8]/90 to-[#1d4ed8]/90 border-2 border-[#bae6fd] shadow-[0_0_16px_rgba(56,189,248,0.6)] pointer-events-none"
+                  className="w-[40px] h-[40px] rounded-full bg-gradient-to-br from-[#38bdf8]/90 to-[#1d4ed8]/90 border-2 border-[#bae6fd] shadow-[0_0_16px_rgba(56,189,248,0.6)] pointer-events-none"
                   style={{
                     transform: `translate(${joyKnobOffset.x}px, ${joyKnobOffset.y}px)`,
                   }}
                 />
               </div>
 
-              {/* Bottom-Right Thumb Action Cluster (All actions fire immediately in onPointerDown for true multi-touch while running) */}
+              {/* Bottom-Right Cast Cluster: Dynamic [E] + 2 Side Spells (Домой & Рост) Above ⚡ КАСТ */}
               <div
                 data-testid="mobile-action-cluster"
                 onPointerDown={(e) => e.stopPropagation()}
-                className="fixed bottom-4 right-4 z-20 flex flex-col items-end gap-2.5 pointer-events-auto touch-none select-none"
+                className="fixed bottom-2 right-2 z-20 flex flex-col items-end gap-1.5 pointer-events-auto touch-none select-none"
               >
-                <div className="flex items-center gap-2.5">
-                  {(hud.nearbyInteractPrompt || hud.openChestPreview) && (
-                    <button
-                      type="button"
-                      data-testid="mobile-interact-btn"
-                      onPointerDown={(e) => {
-                        e.stopPropagation();
-                        e.preventDefault();
-                        worldRef.current?.tryHarvestOrInteract();
-                      }}
-                      className="w-[54px] h-[54px] rounded-full border-2 border-[#4ade80] bg-[#16a34a]/90 active:scale-95 text-white font-bold text-xs flex flex-col items-center justify-center leading-tight shadow-[0_0_16px_rgba(34,197,94,0.6)] cursor-pointer"
-                    >
-                      <span className="text-base leading-none">🖐️</span>
-                      <span className="text-[10px]">E</span>
-                    </button>
-                  )}
+                {(hud.nearbyInteractPrompt || hud.openChestPreview) && (
                   <button
                     type="button"
-                    data-testid="mobile-voice-btn"
-                    aria-label="Голосовой режим"
+                    data-testid="mobile-interact-btn"
                     onPointerDown={(e) => {
                       e.stopPropagation();
                       e.preventDefault();
-                      handleMobileVoiceToggle();
+                      worldRef.current?.tryHarvestOrInteract();
                     }}
-                    className={`w-[56px] h-[56px] rounded-full border-2 active:scale-95 text-xl flex items-center justify-center transition-all cursor-pointer ${
-                      micListening
-                        ? 'bg-[#dc2626]/90 border-[#f87171] text-white shadow-[0_0_18px_rgba(239,68,68,0.7)] animate-pulse'
-                        : 'bg-[#14111f]/88 border-[#4c3d75] text-[#e2d9f3] shadow-lg'
-                    }`}
+                    className="w-[48px] h-[48px] rounded-full border-2 border-[#4ade80] bg-[#16a34a]/90 active:scale-95 text-white font-bold text-xs flex flex-col items-center justify-center leading-tight shadow-[0_0_16px_rgba(34,197,94,0.6)] cursor-pointer"
                   >
-                    🎤
+                    <span className="text-sm leading-none">🖐️</span>
+                    <span className="text-[9px]">E</span>
                   </button>
-                </div>
+                )}
 
-                <div className="flex items-end gap-2.5">
-                  <button
-                    type="button"
-                    data-testid="mobile-rune-btn"
-                    onPointerDown={(e) => {
-                      e.stopPropagation();
-                      e.preventDefault();
-                      setMobileDrawMode((prev) => {
-                        const next = !prev;
-                        stateRef.current.mobileDrawMode = next;
-                        return next;
-                      });
-                    }}
-                    className={`w-[56px] h-[56px] rounded-full border-2 active:scale-95 font-bold flex flex-col items-center justify-center leading-tight transition-all cursor-pointer ${
-                      mobileDrawMode
-                        ? 'bg-[#422006]/95 border-[#fde047] text-[#fde047] shadow-[0_0_20px_rgba(250,204,21,0.7)]'
-                        : 'bg-[#14111f]/88 border-[#a855f7]/70 text-[#e9d5ff] shadow-lg'
-                    }`}
+                {hudHideStep < 3 && (
+                  <div
+                    data-testid="mobile-cast-side-spells"
+                    className="flex items-center gap-1"
                   >
-                    <span className="text-base leading-none">✍️</span>
-                    <span className="text-[9px] tracking-tight">РУНА</span>
-                  </button>
+                    {MOBILE_CAST_SIDE_SPELLS.map((spId) => {
+                      const sp = SPELLS[spId];
+                      const isSelected = selectedSpellId === spId;
+                      const cd = hud.spellCooldowns?.[spId] || 0;
+                      const maxCd = getSpellCooldownForLevel(spId, spellLevels[spId] || 1);
+                      const onCooldown = cd > 0.05;
+                      const gesturePts = getActiveSpellGestureInfo(spId, hud.aimSurfaceTarget)
+                        .templatePoints.map((p) => `${Math.round(p.x * 36)},${Math.round(p.y * 36)}`)
+                        .join(' ');
+                      return (
+                        <button
+                          key={sp.id}
+                          type="button"
+                          data-testid={`spell-dock-btn-${sp.id}`}
+                          onPointerDown={(e) => {
+                            e.stopPropagation();
+                            e.preventDefault();
+                            handleSelectSpell(sp.id);
+                          }}
+                          className={`relative overflow-hidden w-[44px] py-1 px-0.5 rounded-lg border flex flex-col items-center justify-center gap-0.5 transition-all cursor-pointer ${
+                            isSelected
+                              ? 'bg-[#261f3d]'
+                              : 'bg-[#161321]/92 border-[#2a233d] hover:border-[#4c3d75]'
+                          }`}
+                          style={isSelected ? { borderColor: sp.color } : undefined}
+                        >
+                          {onCooldown && (
+                            <div
+                              className="absolute bottom-0 left-0 right-0 bg-[#09080d]/85 pointer-events-none transition-all duration-100"
+                              style={{ height: `${Math.min(100, (cd / maxCd) * 100)}%` }}
+                            />
+                          )}
+                          <SpellRuneGlyphSvg
+                            spellId={sp.id}
+                            color={sp.color}
+                            svgPoints={gesturePts}
+                            className="relative w-4 h-4 overflow-visible"
+                          />
+                          <span
+                            className="relative text-[8.5px] font-bold leading-none whitespace-nowrap tracking-tighter"
+                            style={{ color: sp.color }}
+                          >
+                            {sp.shortWord}
+                          </span>
+                          {onCooldown && (
+                            <span className="absolute inset-0 flex items-center justify-center text-[10px] font-bold font-mono-num text-white hud-stroke">
+                              {Math.ceil(cd)}с
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
 
-                  <button
-                    type="button"
-                    data-testid="mobile-cast-btn"
-                    onPointerDown={(e) => {
-                      e.stopPropagation();
-                      e.preventDefault();
-                      handleMobileCastTap();
-                    }}
-                    className="w-[64px] h-[64px] rounded-full border-2 border-[#fde047] bg-gradient-to-br from-[#f59e0b] to-[#ea580c] active:scale-95 text-white font-extrabold flex flex-col items-center justify-center leading-tight shadow-[0_0_22px_rgba(245,158,11,0.6)] cursor-pointer"
-                  >
-                    <span className="text-lg leading-none">⚡</span>
-                    <span className="text-[10px] tracking-tight">КАСТ</span>
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  data-testid="mobile-cast-btn"
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    handleMobileCastTap();
+                  }}
+                  className="w-[62px] h-[62px] rounded-full border-2 border-[#fde047] bg-gradient-to-br from-[#f59e0b] to-[#ea580c] active:scale-95 text-white font-extrabold flex flex-col items-center justify-center leading-tight shadow-[0_0_22px_rgba(245,158,11,0.6)] cursor-pointer"
+                >
+                  <span className="text-lg leading-none">⚡</span>
+                  <span className="text-[10px] tracking-tight">КАСТ</span>
+                </button>
               </div>
             </>
           )}
@@ -5115,7 +5264,7 @@ export default function App() {
           <div
             className={`fixed left-1/2 -translate-x-1/2 flex flex-col items-center gap-1.5 pointer-events-auto ${
               controlScheme === 'mobile'
-                ? 'bottom-[152px] sm:bottom-3 w-auto max-w-[94vw] sm:max-w-[56vw] px-1'
+                ? 'bottom-[118px] sm:bottom-2 sm:left-[calc(50%+12px)] w-auto px-0'
                 : isNarrowViewport
                   ? 'bottom-3 w-auto max-w-[94vw] px-1'
                   : 'bottom-3 w-full max-w-[890px] px-4'
@@ -5162,7 +5311,7 @@ export default function App() {
                 spellCooldowns={hud.spellCooldowns}
                 onSelectSpell={handleSelectSpell}
                 compactMobile={controlScheme === 'mobile' || isNarrowViewport}
-                spellOrder={dockSpellOrder}
+                spellOrder={SPELL_ORDER}
                 isMobileTouch={controlScheme === 'mobile'}
               />
             )}
