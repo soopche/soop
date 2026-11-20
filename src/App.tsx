@@ -140,6 +140,7 @@ interface SpellDockGridProps {
   aimSurfaceTarget: AimSurfaceTarget;
   spellCooldowns: Record<SpellId, number>;
   onSelectSpell: (spellId: SpellId) => void;
+  compactMobile?: boolean;
 }
 
 const SpellDockGrid = memo(
@@ -149,6 +150,7 @@ const SpellDockGrid = memo(
     aimSurfaceTarget,
     spellCooldowns,
     onSelectSpell,
+    compactMobile = false,
   }: SpellDockGridProps) {
     const svgPointsBySpell = useMemo(() => {
       const map = {} as Record<SpellId, string>;
@@ -176,7 +178,11 @@ const SpellDockGrid = memo(
           type="button"
           data-testid={`spell-dock-btn-${sp.id}`}
           onClick={() => onSelectSpell(sp.id)}
-          className={`relative overflow-hidden py-2 px-1.5 rounded-lg border flex flex-col items-center justify-center gap-1 transition-all cursor-pointer ${
+          className={`relative overflow-hidden rounded-lg border flex flex-col items-center justify-center transition-all cursor-pointer ${
+            compactMobile
+              ? 'shrink-0 min-w-[54px] py-1.5 px-1.5 gap-0.5'
+              : 'py-2 px-1.5 gap-1'
+          } ${
             isSelected
               ? 'bg-[#261f3d]'
               : 'bg-[#161321] border-[#2a233d] hover:border-[#4c3d75]'
@@ -192,13 +198,15 @@ const SpellDockGrid = memo(
             />
           )}
 
-          <span className="relative text-[11px] font-bold font-mono-num text-[#fde047] leading-none">
-            [{hotkeyLabel}]
-          </span>
+          {!compactMobile && (
+            <span className="relative text-[11px] font-bold font-mono-num text-[#fde047] leading-none">
+              [{hotkeyLabel}]
+            </span>
+          )}
 
           <svg
             viewBox="0 0 36 36"
-            className="relative w-7 h-7 overflow-visible"
+            className={`relative overflow-visible ${compactMobile ? 'w-5 h-5' : 'w-7 h-7'}`}
             aria-hidden="true"
           >
             {sp.id === 'arcane_sword' ? (
@@ -246,7 +254,11 @@ const SpellDockGrid = memo(
 
           <span
             className={`relative font-bold leading-none whitespace-nowrap ${
-              sp.shortWord.length > 8 ? 'text-[9.5px] tracking-tighter' : 'text-xs'
+              compactMobile
+                ? 'text-[9.5px] tracking-tighter'
+                : sp.shortWord.length > 8
+                ? 'text-[9.5px] tracking-tighter'
+                : 'text-xs'
             }`}
             style={{ color: sp.color }}
           >
@@ -261,6 +273,19 @@ const SpellDockGrid = memo(
         </button>
       );
     };
+
+    if (compactMobile) {
+      return (
+        <div
+          data-testid="spell-dock-grid"
+          onPointerDown={(e) => e.stopPropagation()}
+          className="max-w-[92vw] sm:max-w-[54vw] p-1.5 rounded-xl border border-[#3b3154] shadow-2xl flex items-center gap-1.5 overflow-x-auto no-scrollbar touch-pan-x"
+          style={{ backgroundColor: 'rgba(14, 12, 22, 0.9)' }}
+        >
+          {SPELL_ORDER.map(renderSpellButton)}
+        </div>
+      );
+    }
 
     const combatSpells = SPELL_ORDER.slice(0, 4);
     const tacticalSpells = SPELL_ORDER.slice(4, 8);
@@ -300,7 +325,8 @@ const SpellDockGrid = memo(
       prev.selectedSpellId !== next.selectedSpellId ||
       prev.spellLevels !== next.spellLevels ||
       prev.aimSurfaceTarget !== next.aimSurfaceTarget ||
-      prev.onSelectSpell !== next.onSelectSpell
+      prev.onSelectSpell !== next.onSelectSpell ||
+      prev.compactMobile !== next.compactMobile
     ) {
       return false;
     }
@@ -360,16 +386,29 @@ export default function App() {
   const [masterVolume, setMasterVolume] = useState<number>(() =>
     Math.round(audioEngine.getMasterVolume() * 100)
   );
-  const [graphicsQuality, setGraphicsQuality] = useState<GraphicsQuality>('high');
+  const isTouchDevice =
+    typeof window !== 'undefined' &&
+    ((typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches) ||
+      (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0));
+  const [isNarrowViewport, setIsNarrowViewport] = useState<boolean>(() =>
+    typeof window !== 'undefined' ? window.innerWidth < 768 : false
+  );
+  const [graphicsQuality, setGraphicsQuality] = useState<GraphicsQuality>(() =>
+    isTouchDevice ? 'medium' : 'high'
+  );
   const [controlScheme, setControlScheme] = useState<ControlSchemeId>(() => {
     try {
-      return localStorage.getItem('vox_arcanum_control_scheme_v1') === 'classic'
-        ? 'classic'
-        : 'alternative';
+      const saved = localStorage.getItem('vox_arcanum_control_scheme_v1');
+      if (saved === 'classic' || saved === 'alternative' || saved === 'mobile') {
+        return saved;
+      }
+      return isTouchDevice ? 'mobile' : 'alternative';
     } catch {
-      return 'alternative';
+      return isTouchDevice ? 'mobile' : 'alternative';
     }
   });
+  const [mobileDrawMode, setMobileDrawMode] = useState(false);
+  const [joyKnobOffset, setJoyKnobOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [roomInputCode, setRoomInputCode] = useState('');
 
   // Player Progression, Inventory & Customization State
@@ -516,6 +555,32 @@ export default function App() {
   });
   const exitingPointerLockProgrammaticallyRef = useRef(false);
   const [isTracingRune, setIsTracingRune] = useState(false);
+  const activeLookPointerIdRef = useRef<number | null>(null);
+  const lastLookPointerPosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const activeDrawPointerIdRef = useRef<number | null>(null);
+  const mobileDrawLastPosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const mobileDrawDirectModeRef = useRef(false);
+  const activeJoyPointerIdRef = useRef<number | null>(null);
+  const joyBaseRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const onResize = () => {
+      setIsNarrowViewport(window.innerWidth < 768);
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  useEffect(() => {
+    if (gameState !== 'playing' || grimoireOpen) {
+      setMobileDrawMode(false);
+      setJoyKnobOffset({ x: 0, y: 0 });
+      activeJoyPointerIdRef.current = null;
+      activeLookPointerIdRef.current = null;
+      activeDrawPointerIdRef.current = null;
+      worldRef.current?.setTouchMoveVector(0, 0);
+    }
+  }, [gameState, grimoireOpen]);
 
   // Refs to access current React state inside 3D engine / Firestore callbacks without re-mounting
   const stateRef = useRef({
@@ -535,6 +600,7 @@ export default function App() {
     selfPlayerId,
     pvpPlayerName,
     controlScheme,
+    mobileDrawMode,
     reagentInventory,
     craftedPotions,
     cookedFoods,
@@ -558,6 +624,7 @@ export default function App() {
       selfPlayerId,
       pvpPlayerName,
       controlScheme,
+      mobileDrawMode,
       reagentInventory,
       craftedPotions,
       cookedFoods,
@@ -598,6 +665,13 @@ export default function App() {
     (scheme: ControlSchemeId) => {
       setControlScheme(scheme);
       stateRef.current.controlScheme = scheme;
+      setMobileDrawMode(false);
+      stateRef.current.mobileDrawMode = false;
+      setJoyKnobOffset({ x: 0, y: 0 });
+      activeJoyPointerIdRef.current = null;
+      activeLookPointerIdRef.current = null;
+      activeDrawPointerIdRef.current = null;
+      worldRef.current?.setTouchMoveVector(0, 0);
       worldRef.current?.setControlScheme(scheme);
       try {
         localStorage.setItem('vox_arcanum_control_scheme_v1', scheme);
@@ -605,7 +679,9 @@ export default function App() {
         // Ignore storage errors
       }
       showToast(
-        scheme === 'alternative'
+        scheme === 'mobile'
+          ? '📱 Включено Сенсорное управление (Телефон)'
+          : scheme === 'alternative'
           ? '⚡ Включено Основное управление (Лёгкое): поворот камеры мышью без [ЛКМ], клик [ЛКМ]/[Пробел] — каст 20%, зажать [ПКМ] — рисование руны от жёлтой точки!'
           : '🪄 Включено Классическое управление (дополнительный режим)'
       );
@@ -1649,6 +1725,9 @@ export default function App() {
     });
 
     worldRef.current = engine;
+    if (isTouchDevice) {
+      engine.setGraphicsQuality('medium');
+    }
     engine.setLabyrinthMultiplayerMode(initialLabyrinthMpMode);
     engine.setControlScheme(stateRef.current.controlScheme);
     engine.setRadarEnabled(true);
@@ -2639,9 +2718,9 @@ export default function App() {
 
   useEffect(() => {
     if (gameState === 'playing') {
-      renderHudRuneOverlay(gesturePointsRef.current, isTracingRune);
+      renderHudRuneOverlay(gesturePointsRef.current, isTracingRune || mobileDrawMode);
     }
-  }, [gameState, hud.aimSurfaceTarget, isTracingRune, renderHudRuneOverlay, selectedSpellId]);
+  }, [gameState, hud.aimSurfaceTarget, isTracingRune, mobileDrawMode, renderHudRuneOverlay, selectedSpellId]);
 
   const handleViewportWheel = (e: React.WheelEvent<HTMLDivElement>) => {
     if (gameState !== 'playing' || grimoireOpen) return;
@@ -2658,8 +2737,142 @@ export default function App() {
     altEdgeTurnRef.current.pitchRate = 0;
   };
 
+  const updateJoystickFromClientPos = (clientX: number, clientY: number) => {
+    const baseEl = joyBaseRef.current;
+    if (!baseEl) return;
+    const rect = baseEl.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const dx = clientX - cx;
+    const dy = clientY - cy;
+    const maxRadius = 44;
+    const dist = Math.hypot(dx, dy);
+    const scale = dist > maxRadius && dist > 0 ? maxRadius / dist : 1;
+    const clampedX = dx * scale;
+    const clampedY = dy * scale;
+    setJoyKnobOffset({ x: clampedX, y: clampedY });
+    worldRef.current?.setTouchMoveVector(clampedX / maxRadius, -(clampedY / maxRadius));
+  };
+
+  const handleJoystickPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    if (gameState !== 'playing' || grimoireOpen) return;
+    if (activeJoyPointerIdRef.current !== null) return;
+    activeJoyPointerIdRef.current = e.pointerId;
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // Ignore capture errors in synthetic test environments
+    }
+    updateJoystickFromClientPos(e.clientX, e.clientY);
+  };
+
+  const handleJoystickPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    if (activeJoyPointerIdRef.current !== e.pointerId) return;
+    updateJoystickFromClientPos(e.clientX, e.clientY);
+  };
+
+  const handleJoystickPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    if (activeJoyPointerIdRef.current !== e.pointerId) return;
+    activeJoyPointerIdRef.current = null;
+    setJoyKnobOffset({ x: 0, y: 0 });
+    worldRef.current?.setTouchMoveVector(0, 0);
+  };
+
+  const handleMobileCastTap = () => {
+    if (gameState !== 'playing' || grimoireOpen) return;
+    if (hud.activeArcaneSword && selectedSpellId === 'arcane_sword') {
+      const dir = altSwordNextHandRef.current;
+      altSwordNextHandRef.current = dir === 1 ? -1 : 1;
+      worldRef.current?.swingArcaneSword(dir);
+      return;
+    }
+    triggerSpellCast({
+      spellId: selectedSpellId,
+      castMode: 'quick',
+      gestureAccuracy: 0,
+      voiceMatched: false,
+    });
+  };
+
+  const handleMobileVoiceToggle = () => {
+    if (micListening) {
+      voiceRef.current?.stop();
+    } else {
+      voiceRef.current?.startPushToTalk(true);
+    }
+  };
+
   const handleViewportPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (gameState !== 'playing' || grimoireOpen) return;
+
+    // Mobile Touch Control Scheme: separate pointer IDs for multi-touch camera look & 1-stroke rune drawing
+    if (stateRef.current.controlScheme === 'mobile') {
+      if (e.pointerId === activeJoyPointerIdRef.current) return;
+      if (showControlsHelp) setShowControlsHelp(false);
+
+      if (stateRef.current.mobileDrawMode) {
+        if (activeDrawPointerIdRef.current !== null) return;
+        activeDrawPointerIdRef.current = e.pointerId;
+        isDrawingGestureRef.current = true;
+        setIsTracingRune(true);
+        try {
+          e.currentTarget.setPointerCapture(e.pointerId);
+        } catch {
+          // Ignore capture errors
+        }
+        const canvas = gestureOverlayCanvasRef.current;
+        if (canvas) {
+          const rect = canvas.getBoundingClientRect();
+          const insideCanvas =
+            e.clientX >= rect.left &&
+            e.clientX <= rect.right &&
+            e.clientY >= rect.top &&
+            e.clientY <= rect.bottom;
+          mobileDrawDirectModeRef.current = insideCanvas;
+          mobileDrawLastPosRef.current = { x: e.clientX, y: e.clientY };
+
+          let startPt: Point2D;
+          if (insideCanvas && rect.width > 0 && rect.height > 0) {
+            startPt = {
+              x: ((e.clientX - rect.left) / rect.width) * canvas.width,
+              y: ((e.clientY - rect.top) / rect.height) * canvas.height,
+            };
+          } else {
+            const gestureInfo = getActiveSpellGestureInfo(
+              stateRef.current.selectedSpellId,
+              hud.aimSurfaceTarget
+            );
+            const first = gestureInfo.templatePoints[0] || { x: 0.5, y: 0.2 };
+            startPt = {
+              x: first.x * canvas.width,
+              y: first.y * canvas.height,
+            };
+          }
+          altVirtualPenRef.current = { ...startPt };
+          gesturePointsRef.current = [startPt];
+          renderHudRuneOverlay(gesturePointsRef.current, true);
+          worldRef.current?.setWandGestureTraceOffset(
+            startPt.x / canvas.width,
+            startPt.y / canvas.height
+          );
+        }
+        return;
+      }
+
+      if (activeLookPointerIdRef.current === null) {
+        activeLookPointerIdRef.current = e.pointerId;
+        lastLookPointerPosRef.current = { x: e.clientX, y: e.clientY };
+        try {
+          e.currentTarget.setPointerCapture(e.pointerId);
+        } catch {
+          // Ignore capture errors
+        }
+      }
+      return;
+    }
 
     if (e.button === 2 || e.shiftKey) {
       e.preventDefault();
@@ -2744,6 +2957,51 @@ export default function App() {
 
   const handleViewportPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     if (gameState !== 'playing' || grimoireOpen) return;
+
+    if (stateRef.current.controlScheme === 'mobile') {
+      if (e.pointerId === activeJoyPointerIdRef.current) return;
+
+      if (activeDrawPointerIdRef.current === e.pointerId && isDrawingGestureRef.current) {
+        const canvas = gestureOverlayCanvasRef.current;
+        if (canvas) {
+          let x: number;
+          let y: number;
+          if (mobileDrawDirectModeRef.current) {
+            const rect = canvas.getBoundingClientRect();
+            x = ((e.clientX - rect.left) / Math.max(1, rect.width)) * canvas.width;
+            y = ((e.clientY - rect.top) / Math.max(1, rect.height)) * canvas.height;
+          } else {
+            const dx = e.clientX - mobileDrawLastPosRef.current.x;
+            const dy = e.clientY - mobileDrawLastPosRef.current.y;
+            mobileDrawLastPosRef.current = { x: e.clientX, y: e.clientY };
+            altVirtualPenRef.current.x = Math.max(
+              -16,
+              Math.min(canvas.width + 16, altVirtualPenRef.current.x + dx)
+            );
+            altVirtualPenRef.current.y = Math.max(
+              -16,
+              Math.min(canvas.height + 16, altVirtualPenRef.current.y + dy)
+            );
+            x = altVirtualPenRef.current.x;
+            y = altVirtualPenRef.current.y;
+          }
+          gesturePointsRef.current.push({ x, y });
+          renderHudRuneOverlay(gesturePointsRef.current, true);
+          worldRef.current?.setWandGestureTraceOffset(x / canvas.width, y / canvas.height);
+        }
+        return;
+      }
+
+      if (activeLookPointerIdRef.current === e.pointerId) {
+        const dx = e.clientX - lastLookPointerPosRef.current.x;
+        const dy = e.clientY - lastLookPointerPosRef.current.y;
+        lastLookPointerPosRef.current = { x: e.clientX, y: e.clientY };
+        if (dx !== 0 || dy !== 0) {
+          worldRef.current?.rotateCamera(dx * 0.0055, dy * 0.0045);
+        }
+      }
+      return;
+    }
 
     // Safety guard: if RMB was released outside the window/iframe (so `e.buttons` no longer has bit 2 set and Shift is not held),
     // immediately clear any stuck drawing or sword-slash drag state so the mouse NEVER gets stuck!
@@ -2869,6 +3127,67 @@ export default function App() {
   };
 
   const handleViewportPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (stateRef.current.controlScheme === 'mobile') {
+      if (e.pointerId === activeLookPointerIdRef.current) {
+        activeLookPointerIdRef.current = null;
+        return;
+      }
+      if (e.pointerId === activeDrawPointerIdRef.current) {
+        activeDrawPointerIdRef.current = null;
+        isDrawingGestureRef.current = false;
+        setIsTracingRune(false);
+        setMobileDrawMode(false);
+        stateRef.current.mobileDrawMode = false;
+        worldRef.current?.setWandGestureTraceOffset(0.5, 0.5);
+
+        const pts = gesturePointsRef.current;
+        gesturePointsRef.current = [];
+        renderHudRuneOverlay([], false);
+
+        let strokeLenPx = 0;
+        for (let i = 1; i < pts.length; i++) {
+          strokeLenPx += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+        }
+
+        if (pts.length >= 3 && strokeLenPx >= 18) {
+          const equip = EQUIPMENT_CATALOG[equippedStaffId];
+          const recentVoice =
+            pendingVoiceSpellRef.current &&
+            performance.now() - pendingVoiceSpellRef.current.timestamp < 4000
+              ? pendingVoiceSpellRef.current
+              : null;
+
+          const targetSpellId = recentVoice ? recentVoice.spellId : selectedSpellId;
+          const gestureInfo = getActiveSpellGestureInfo(targetSpellId, hud.aimSurfaceTarget);
+          const evalRes =
+            gestureInfo.isContextual && gestureInfo.contextId
+              ? evaluateContextualGesture(
+                  pts,
+                  gestureInfo.contextId,
+                  gestureMasteryLevel * 3 + equip.gestureForgiveness
+                )
+              : evaluateGestureAccuracy(
+                  pts,
+                  targetSpellId,
+                  gestureMasteryLevel * 3,
+                  equip.gestureForgiveness
+                );
+
+          triggerSpellCast({
+            spellId: targetSpellId,
+            castMode: recentVoice ? 'voice_and_drawn' : 'drawn',
+            gestureAccuracy: evalRes.accuracy,
+            voiceMatched: Boolean(recentVoice),
+            voiceQuality: recentVoice?.quality ?? 95,
+            spokenLabel: SPELLS[targetSpellId].shortWord,
+          });
+          pendingVoiceSpellRef.current = null;
+        }
+        return;
+      }
+      return;
+    }
+
     if (e.button === 0 && isLookingDragRef.current) {
       isLookingDragRef.current = false;
       return;
@@ -3306,10 +3625,11 @@ export default function App() {
 
   return (
     <main
-      className="relative w-screen h-screen overflow-hidden bg-[#09080d] select-none"
+      className="relative w-screen h-[100dvh] overflow-hidden bg-[#09080d] select-none touch-none overscroll-none"
       onContextMenu={(e) => e.preventDefault()}
       onPointerMove={handleViewportPointerMove}
       onPointerUp={handleViewportPointerUp}
+      onPointerCancel={handleViewportPointerUp}
       onWheel={handleViewportWheel}
     >
       {/* Isolated Three.js WebGL Viewport Container */}
@@ -3318,7 +3638,7 @@ export default function App() {
         data-testid="webgl-viewport"
         onPointerDown={handleViewportPointerDown}
         onPointerLeave={handleViewportPointerLeave}
-        className={`absolute inset-0 w-full h-full ${
+        className={`absolute inset-0 w-full h-full touch-none ${
           controlScheme === 'alternative' && gameState === 'playing' && !grimoireOpen
             ? 'cursor-none'
             : 'cursor-crosshair'
@@ -3751,7 +4071,11 @@ export default function App() {
           {hudHideStep < 2 && (
             <div
               data-testid="hud-top-left-panel"
-              className="absolute top-4 left-4 p-3 rounded-xl border border-[#3b3154] space-y-2 pointer-events-auto w-[250px]"
+              className={`absolute p-3 rounded-xl border border-[#3b3154] space-y-2 pointer-events-auto w-[250px] ${
+                controlScheme === 'mobile'
+                  ? 'top-[54px] sm:top-3 left-2.5 sm:left-3 origin-top-left scale-[0.82] sm:scale-[0.84] md:scale-100'
+                  : 'top-4 left-4'
+              }`}
               style={{ backgroundColor: 'rgba(14, 12, 22, 0.88)' }}
             >
               {/* Red Health Bar with Heart & Number directly on the bar */}
@@ -4052,24 +4376,30 @@ export default function App() {
           {hudHideStep < 1 && (
             <div
               data-testid="hud-top-right-panel"
-              className="absolute top-4 right-4 flex items-center gap-2 pointer-events-auto"
+              className={`absolute flex items-center pointer-events-auto ${
+                controlScheme === 'mobile'
+                  ? 'top-2.5 right-2.5 sm:top-3 sm:right-3 gap-1.5 sm:gap-2'
+                  : 'top-4 right-4 gap-2'
+              }`}
             >
-              <button
-                type="button"
-                tabIndex={-1}
-                onClick={(e) => {
-                  e.currentTarget.blur();
-                  handlePushToTalkTrigger();
-                }}
-                aria-label="Сказать заклинание в микрофон [R]"
-                className={`px-3.5 h-10 rounded-xl border text-xs font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
-                  micListening
-                    ? 'bg-[#ef4444] border-[#fca5a5] text-white animate-pulse'
-                    : 'bg-[#14111f] hover:bg-[#231e36] border-[#f59e0b] text-[#fde047]'
-                }`}
-              >
-                {micListening ? '● Слушаю [R]...' : '🎤 Голос [R]'}
-              </button>
+              {controlScheme !== 'mobile' && (
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  onClick={(e) => {
+                    e.currentTarget.blur();
+                    handlePushToTalkTrigger();
+                  }}
+                  aria-label="Сказать заклинание в микрофон [R]"
+                  className={`px-3.5 h-10 rounded-xl border text-xs font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                    micListening
+                      ? 'bg-[#ef4444] border-[#fca5a5] text-white animate-pulse'
+                      : 'bg-[#14111f] hover:bg-[#231e36] border-[#f59e0b] text-[#fde047]'
+                  }`}
+                >
+                  {micListening ? '● Слушаю [R]...' : '🎤 Голос [R]'}
+                </button>
+              )}
 
               {/* Single Unified Construction Tab (`Строительство`) with Dropdown for Campfire [C], Wall [B], and Aim-Based Dismantle [N] */}
               <div className="relative">
@@ -4183,7 +4513,7 @@ export default function App() {
                 }}
                 className="px-3 h-10 rounded-xl border border-[#38bdf8] bg-[#101c29] hover:bg-[#16283b] text-[#bae6fd] text-xs font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0 flex items-center gap-1.5"
               >
-                <span>🎒 Инвентарь [I]</span>
+                <span>{controlScheme === 'mobile' ? '🎒 Инвентарь' : '🎒 Инвентарь [I]'}</span>
                 {readyToClaimQuestsCount > 0 && (
                   <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-[#22c55e] text-[#09080d] animate-pulse">
                     +{readyToClaimQuestsCount}
@@ -4497,7 +4827,7 @@ export default function App() {
               CONTROLS HELP OVERLAY (Shown at Labyrinth start & toggled via [.] Period key;
               auto-closes after 15s or on any action key!)
              ===================================================================== */}
-          {showControlsHelp && hudHideStep < 3 && (
+          {showControlsHelp && hudHideStep < 3 && controlScheme !== 'mobile' && (
             <div
               data-testid="controls-help-overlay"
               className={`fixed ${
@@ -4613,37 +4943,154 @@ export default function App() {
               - Step 3: Also hide bottom dock & [ . ] button
               - Step 4: Also hide rune contour canvas (keep crosshair SVG!)
              ===================================================================== */}
-          <div className="fixed bottom-3 left-1/2 -translate-x-1/2 w-full max-w-[890px] px-4 flex flex-col items-center gap-1.5 pointer-events-auto">
-            {/* [H] Visibility Hint Badge (Always visible, including Step 4!) */}
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                tabIndex={-1}
-                data-testid="hud-visibility-toggle"
-                onClick={(e) => {
-                  e.currentTarget.blur();
-                  setHudHideStep((prev) => ((prev + 1) % 5) as 0 | 1 | 2 | 3 | 4);
-                }}
-                className="px-3 py-1 rounded-lg border border-[#3b3154] bg-[#14111f]/90 hover:bg-[#231e36] text-[11px] font-mono-num text-[#cbd5e1] transition-colors cursor-pointer"
-              >
-                {hudHideStep < 4 ? '[H] Скрыть интерфейс' : '[H] Вернуть интерфейс'}
-              </button>
+          {/* MOBILE TOUCH CONTROLS OVERLAY (Rendered ONLY when controlScheme === 'mobile') */}
+          {controlScheme === 'mobile' && (
+            <>
+              {mobileDrawMode && (
+                <div
+                  data-testid="mobile-draw-hint"
+                  className="fixed top-[58px] left-1/2 -translate-x-1/2 z-30 px-4 py-1.5 rounded-full border-2 border-[#fde047] bg-[#2b1f10]/95 text-xs font-bold text-[#fde047] shadow-[0_0_20px_rgba(250,204,21,0.45)] pointer-events-none whitespace-nowrap"
+                >
+                  ✍️ Нарисуйте руну пальцем
+                </div>
+              )}
 
-              {hudHideStep < 3 && (
+              {/* Bottom-Left Virtual Joystick (120x120px base + 46x46px thumb knob) */}
+              <div
+                ref={joyBaseRef}
+                data-testid="mobile-virtual-joystick"
+                onPointerDown={handleJoystickPointerDown}
+                onPointerMove={handleJoystickPointerMove}
+                onPointerUp={handleJoystickPointerUp}
+                onPointerCancel={handleJoystickPointerUp}
+                className="fixed bottom-4 left-4 z-20 w-[120px] h-[120px] rounded-full border-2 border-[#38bdf8]/45 bg-[#0e0c16]/55 backdrop-blur-sm flex items-center justify-center pointer-events-auto touch-none select-none shadow-[0_0_24px_rgba(0,0,0,0.45)]"
+              >
+                <div className="absolute top-2 w-1.5 h-1.5 rounded-full bg-[#38bdf8]/45 pointer-events-none" />
+                <div className="absolute bottom-2 w-1.5 h-1.5 rounded-full bg-[#38bdf8]/45 pointer-events-none" />
+                <div className="absolute left-2 w-1.5 h-1.5 rounded-full bg-[#38bdf8]/45 pointer-events-none" />
+                <div className="absolute right-2 w-1.5 h-1.5 rounded-full bg-[#38bdf8]/45 pointer-events-none" />
+                <div
+                  data-testid="mobile-joystick-knob"
+                  className="w-[46px] h-[46px] rounded-full bg-gradient-to-br from-[#38bdf8]/90 to-[#1d4ed8]/90 border-2 border-[#bae6fd] shadow-[0_0_16px_rgba(56,189,248,0.6)] pointer-events-none"
+                  style={{
+                    transform: `translate(${joyKnobOffset.x}px, ${joyKnobOffset.y}px)`,
+                  }}
+                />
+              </div>
+
+              {/* Bottom-Right Thumb Action Cluster */}
+              <div
+                data-testid="mobile-action-cluster"
+                onPointerDown={(e) => e.stopPropagation()}
+                className="fixed bottom-4 right-4 z-20 flex flex-col items-end gap-2.5 pointer-events-auto touch-none select-none"
+              >
+                <div className="flex items-center gap-2.5">
+                  {(hud.nearbyInteractPrompt || hud.openChestPreview) && (
+                    <button
+                      type="button"
+                      data-testid="mobile-interact-btn"
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={() => worldRef.current?.tryHarvestOrInteract()}
+                      className="w-[54px] h-[54px] rounded-full border-2 border-[#4ade80] bg-[#16a34a]/90 active:scale-95 text-white font-bold text-xs flex flex-col items-center justify-center leading-tight shadow-[0_0_16px_rgba(34,197,94,0.6)] cursor-pointer"
+                    >
+                      <span className="text-base leading-none">🖐️</span>
+                      <span className="text-[10px]">E</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    data-testid="mobile-voice-btn"
+                    aria-label="Голосовой режим"
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={handleMobileVoiceToggle}
+                    className={`w-[56px] h-[56px] rounded-full border-2 active:scale-95 text-xl flex items-center justify-center transition-all cursor-pointer ${
+                      micListening
+                        ? 'bg-[#dc2626]/90 border-[#f87171] text-white shadow-[0_0_18px_rgba(239,68,68,0.7)] animate-pulse'
+                        : 'bg-[#14111f]/88 border-[#4c3d75] text-[#e2d9f3] shadow-lg'
+                    }`}
+                  >
+                    🎤
+                  </button>
+                </div>
+
+                <div className="flex items-end gap-2.5">
+                  <button
+                    type="button"
+                    data-testid="mobile-rune-btn"
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={() =>
+                      setMobileDrawMode((prev) => {
+                        const next = !prev;
+                        stateRef.current.mobileDrawMode = next;
+                        return next;
+                      })
+                    }
+                    className={`w-[56px] h-[56px] rounded-full border-2 active:scale-95 font-bold flex flex-col items-center justify-center leading-tight transition-all cursor-pointer ${
+                      mobileDrawMode
+                        ? 'bg-[#422006]/95 border-[#fde047] text-[#fde047] shadow-[0_0_20px_rgba(250,204,21,0.7)]'
+                        : 'bg-[#14111f]/88 border-[#a855f7]/70 text-[#e9d5ff] shadow-lg'
+                    }`}
+                  >
+                    <span className="text-base leading-none">✍️</span>
+                    <span className="text-[9px] tracking-tight">РУНА</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    data-testid="mobile-cast-btn"
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={handleMobileCastTap}
+                    className="w-[64px] h-[64px] rounded-full border-2 border-[#fde047] bg-gradient-to-br from-[#f59e0b] to-[#ea580c] active:scale-95 text-white font-extrabold flex flex-col items-center justify-center leading-tight shadow-[0_0_22px_rgba(245,158,11,0.6)] cursor-pointer"
+                  >
+                    <span className="text-lg leading-none">⚡</span>
+                    <span className="text-[10px] tracking-tight">КАСТ</span>
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
+
+          <div
+            className={`fixed left-1/2 -translate-x-1/2 flex flex-col items-center gap-1.5 pointer-events-auto ${
+              controlScheme === 'mobile'
+                ? 'bottom-[152px] sm:bottom-3 w-auto max-w-[94vw] sm:max-w-[56vw] px-1'
+                : isNarrowViewport
+                  ? 'bottom-3 w-auto max-w-[94vw] px-1'
+                  : 'bottom-3 w-full max-w-[890px] px-4'
+            }`}
+          >
+            {/* [H] Visibility Hint Badge (PC mode full controls; compact/hidden overlap-free on mobile) */}
+            {controlScheme !== 'mobile' && (
+              <div className="flex items-center gap-2">
                 <button
                   type="button"
                   tabIndex={-1}
-                  data-testid="controls-help-toggle-btn"
+                  data-testid="hud-visibility-toggle"
                   onClick={(e) => {
                     e.currentTarget.blur();
-                    setShowControlsHelp((prev) => !prev);
+                    setHudHideStep((prev) => ((prev + 1) % 5) as 0 | 1 | 2 | 3 | 4);
                   }}
-                  className="px-2.5 py-1 rounded-lg border border-[#3b3154] bg-[#14111f]/90 hover:bg-[#231e36] text-[11px] font-mono-num text-[#fde047] transition-colors cursor-pointer"
+                  className="px-3 py-1 rounded-lg border border-[#3b3154] bg-[#14111f]/90 hover:bg-[#231e36] text-[11px] font-mono-num text-[#cbd5e1] transition-colors cursor-pointer"
                 >
-                  [ . ] Подсказка кнопок
+                  {hudHideStep < 4 ? '[H] Скрыть интерфейс' : '[H] Вернуть интерфейс'}
                 </button>
-              )}
-            </div>
+
+                {hudHideStep < 3 && (
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    data-testid="controls-help-toggle-btn"
+                    onClick={(e) => {
+                      e.currentTarget.blur();
+                      setShowControlsHelp((prev) => !prev);
+                    }}
+                    className="px-2.5 py-1 rounded-lg border border-[#3b3154] bg-[#14111f]/90 hover:bg-[#231e36] text-[11px] font-mono-num text-[#fde047] transition-colors cursor-pointer"
+                  >
+                    [ . ] Подсказка кнопок
+                  </button>
+                )}
+              </div>
+            )}
 
             {hudHideStep < 3 && (
               <SpellDockGrid
@@ -4652,6 +5099,7 @@ export default function App() {
                 aimSurfaceTarget={hud.aimSurfaceTarget}
                 spellCooldowns={hud.spellCooldowns}
                 onSelectSpell={handleSelectSpell}
+                compactMobile={controlScheme === 'mobile' || isNarrowViewport}
               />
             )}
           </div>
@@ -4979,7 +5427,7 @@ export default function App() {
                           : 'bg-[#12101b] border-[#2a233d] text-[#94a3b8] hover:text-white'
                       }`}
                     >
-                      ⚡ Основное (Лёгкое)
+                      ⚡ ПК · Основное
                     </button>
                     <button
                       type="button"
@@ -4991,7 +5439,19 @@ export default function App() {
                           : 'bg-[#12101b] border-[#2a233d] text-[#94a3b8] hover:text-white'
                       }`}
                     >
-                      🪄 Классическое
+                      🪄 ПК · Классическое
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="control-scheme-mobile-btn"
+                      onClick={() => handleSelectControlScheme('mobile')}
+                      className={`py-2.5 px-3 rounded-lg border text-xs font-bold transition-colors cursor-pointer ${
+                        controlScheme === 'mobile'
+                          ? 'bg-[#132638] border-[#38bdf8] text-[#bae6fd]'
+                          : 'bg-[#12101b] border-[#2a233d] text-[#94a3b8] hover:text-white'
+                      }`}
+                    >
+                      📱 Телефон / Сенсор
                     </button>
                   </div>
                 )}

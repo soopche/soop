@@ -117,6 +117,124 @@ test('VoiceSpellRecognizer checks all recognition alternatives and ignores stale
   }
 });
 
+test('VoiceSpellRecognizer anti-beep continuousMode dispatches multiple spells without stopping, deduplicates resultIndex & 650ms window, and never auto-restarts onend', () => {
+  const instances: Array<{
+    continuous: boolean;
+    interimResults: boolean;
+    startCalls: number;
+    stopCalls: number;
+    onstart?: () => void;
+    onresult?: (e: unknown) => void;
+    onend?: () => void;
+    start: () => void;
+    stop: () => void;
+  }> = [];
+
+  class MockSpeechRecognition {
+    lang = '';
+    continuous = false;
+    interimResults = false;
+    maxAlternatives = 1;
+    startCalls = 0;
+    stopCalls = 0;
+    onstart?: () => void;
+    onresult?: (e: unknown) => void;
+    onerror?: (e: unknown) => void;
+    onend?: () => void;
+    start() {
+      this.startCalls += 1;
+    }
+    stop() {
+      this.stopCalls += 1;
+    }
+    constructor() {
+      instances.push(this);
+    }
+  }
+
+  const g = globalThis as unknown as { window?: Record<string, unknown> };
+  const prevWindow = g.window;
+  const origPerfNow = performance.now.bind(performance);
+  let fakeNowMs = 5000;
+  performance.now = () => fakeNowMs;
+  g.window = { SpeechRecognition: MockSpeechRecognition };
+
+  try {
+    const recognized: Array<{ spellId: SpellId; transcript: string }> = [];
+    const statuses: Array<{ listening: boolean; supported: boolean }> = [];
+
+    const recognizer = new VoiceSpellRecognizer({
+      onSpellRecognized: (spellId, transcript) => {
+        recognized.push({ spellId, transcript });
+      },
+      onTranscriptUpdate: () => {},
+      onStatusChange: (listening, supported) => {
+        statuses.push({ listening, supported });
+      },
+    });
+
+    recognizer.startPushToTalk(true);
+    assert.equal(instances.length, 1);
+    const rec = instances[0];
+    assert.equal(rec.continuous, true);
+    assert.equal(rec.interimResults, true);
+    assert.equal(rec.startCalls, 1);
+
+    rec.onstart?.();
+    assert.deepEqual(statuses[statuses.length - 1], { listening: true, supported: true });
+
+    // Spell 1 at result index 0 -> dispatches WITHOUT calling stop()
+    rec.onresult?.({
+      resultIndex: 0,
+      results: [Object.assign([{ transcript: 'огонь' }], { length: 1 })],
+    });
+    assert.equal(recognized.length, 1);
+    assert.equal(recognized[0].spellId, 'incendio');
+    assert.equal(rec.stopCalls, 0, 'continuousMode must not stop after a spell');
+
+    // Duplicate interim/final update for same result index 0 (even after >650ms) must be skipped
+    fakeNowMs = 6000;
+    rec.onresult?.({
+      resultIndex: 0,
+      results: [Object.assign([{ transcript: 'огонь' }], { length: 1 })],
+    });
+    assert.equal(recognized.length, 1);
+
+    // Rapid new result index 1 within < 650ms of previous dispatch must be throttled
+    fakeNowMs = 5400;
+    rec.onresult?.({
+      resultIndex: 1,
+      results: [
+        Object.assign([{ transcript: 'огонь' }], { length: 1 }),
+        Object.assign([{ transcript: 'мороз' }], { length: 1 }),
+      ],
+    });
+    assert.equal(recognized.length, 1);
+
+    // New result index 1 after >= 650ms dispatches a 2nd spell in the same session without stopping
+    fakeNowMs = 5700;
+    rec.onresult?.({
+      resultIndex: 1,
+      results: [
+        Object.assign([{ transcript: 'огонь' }], { length: 1 }),
+        Object.assign([{ transcript: 'мороз' }], { length: 1 }),
+      ],
+    });
+    assert.equal(recognized.length, 2);
+    assert.equal(recognized[1].spellId, 'glacius');
+    assert.equal(rec.stopCalls, 0);
+
+    // When Android Chrome ends recognition on silence (onend), DO NOT auto-restart
+    rec.onend?.();
+    assert.equal(instances.length, 1);
+    assert.equal(rec.startCalls, 1, 'onend must never auto-restart in continuousMode');
+    assert.deepEqual(statuses[statuses.length - 1], { listening: false, supported: true });
+  } finally {
+    performance.now = origPerfNow;
+    g.window = prevWindow;
+  }
+});
+
 test('World SFX URLs follow exact 1-to-4 order and ArcaneAudioEngine handles harvest, wall, and zero-CPU campfire loop', async () => {
   assert.equal(
     TREE_CHOP_SOUND_URL,
@@ -468,12 +586,13 @@ test('playFireBurnTick and playHeavyImpact reuse decoded MP3 slices with clean e
     buffer: { tag: string; duration: number } | null;
     playbackRate: MockParam;
     startCalls: Array<[number, number, number | undefined]>;
+    stopCalls: Array<number | undefined>;
     disconnected: boolean;
     onended: (() => void) | null;
     connect: () => void;
     disconnect: () => void;
     start: (when?: number, offset?: number, duration?: number) => void;
-    stop: () => void;
+    stop: (when?: number) => void;
   }
 
   const sources: MockSource[] = [];
@@ -515,6 +634,7 @@ test('playFireBurnTick and playHeavyImpact reuse decoded MP3 slices with clean e
         buffer: null,
         playbackRate: makeParam(1),
         startCalls: [],
+        stopCalls: [],
         disconnected: false,
         onended: null,
         connect() {},
@@ -524,7 +644,9 @@ test('playFireBurnTick and playHeavyImpact reuse decoded MP3 slices with clean e
         start(when = 0, offset = 0, duration?: number) {
           s.startCalls.push([when, offset, duration]);
         },
-        stop() {},
+        stop(when?: number) {
+          s.stopCalls.push(when);
+        },
       };
       sources.push(s);
       return s;
@@ -605,15 +727,16 @@ test('playFireBurnTick and playHeavyImpact reuse decoded MP3 slices with clean e
     burnSrc.onended?.();
     assert.equal(burnGain.disconnected, true);
 
-    // 2. playHeavyImpact routes by spellId and uses 0.16s hit / 0.28s kill slices with no oscillator
+    // 2. playHeavyImpact routes by spellId and uses 0.36s hit (0.29) / 0.55s kill (0.45) slices with 0.12s linear fade-out
     engine.playHeavyImpact(false, 'incendio');
     const fireHitSrc = sources[sources.length - 1];
     const fireHitGain = gains[gains.length - 1];
     assert.equal(fireHitSrc.buffer?.tag, 'INCENDIO');
-    assert.equal(fireHitSrc.startCalls[0][2], 0.16);
+    assert.ok(Math.abs((fireHitSrc.stopCalls[0] ?? 0) - 20.37) < 0.001);
     assert.ok(fireHitSrc.playbackRate.value >= 1.05 && fireHitSrc.playbackRate.value <= 1.22);
-    assert.equal(fireHitGain.gain.linearRampCalls[0][0], 0.22);
-    assert.equal(fireHitGain.gain.linearRampCalls[1][0], 0);
+    assert.equal(fireHitGain.gain.linearRampCalls[0][0], 0.29);
+    assert.equal(fireHitGain.gain.linearRampCalls[1][0], 0.0001);
+    assert.ok(Math.abs(fireHitGain.gain.linearRampCalls[1][1] - 20.36) < 0.001);
     fireHitSrc.onended?.();
     assert.equal(fireHitGain.disconnected, true);
 
@@ -627,10 +750,11 @@ test('playFireBurnTick and playHeavyImpact reuse decoded MP3 slices with clean e
     const killSrc = sources[sources.length - 1];
     const killGain = gains[gains.length - 1];
     assert.equal(killSrc.buffer?.tag, 'STUPEFY');
-    assert.equal(killSrc.startCalls[0][2], 0.28);
+    assert.ok(Math.abs((killSrc.stopCalls[0] ?? 0) - 20.56) < 0.001);
     assert.ok(killSrc.playbackRate.value >= 0.85 && killSrc.playbackRate.value <= 0.95);
-    assert.equal(killGain.gain.linearRampCalls[0][0], 0.34);
-    assert.equal(killGain.gain.linearRampCalls[1][0], 0);
+    assert.equal(killGain.gain.linearRampCalls[0][0], 0.45);
+    assert.equal(killGain.gain.linearRampCalls[1][0], 0.0001);
+    assert.ok(Math.abs(killGain.gain.linearRampCalls[1][1] - 20.55) < 0.001);
     killSrc.onended?.();
     assert.equal(killGain.disconnected, true);
 
@@ -835,13 +959,13 @@ test('playEnemySpellCast and playPlayerHurt reuse decoded MP3 slices with anti-s
     const enemyGain = gains[gains.length - 1];
     assert.equal(enemySrc.buffer?.tag, 'INCENDIO');
     assert.ok(Math.abs(enemySrc.startCalls[0][1] - 0.098) < 0.001);
-    assert.equal(enemySrc.startCalls[0][2], 0.26);
+    assert.ok(Math.abs((enemySrc.stopCalls[0] ?? 0) - 30.56) < 0.001);
     assert.ok(enemySrc.playbackRate.value >= 0.8 && enemySrc.playbackRate.value <= 0.9);
-    // distFactor = 1 - 11/22 = 0.5 -> vol = 0.07
-    assert.ok(Math.abs(enemyGain.gain.setCalls[0][0] - 0.07) < 0.0001);
-    assert.ok(Math.abs(enemyGain.gain.setCalls[1][1] - 30.18) < 0.001);
-    assert.equal(enemyGain.gain.expRampCalls[0][0], 0.0001);
-    assert.ok(Math.abs(enemyGain.gain.expRampCalls[0][1] - 30.26) < 0.001);
+    // distFactor = 1 - 11/22 = 0.5 -> vol = 0.095
+    assert.ok(Math.abs(enemyGain.gain.setCalls[0][0] - 0.095) < 0.0001);
+    assert.ok(Math.abs(enemyGain.gain.setCalls[1][1] - 30.43) < 0.001);
+    assert.equal(enemyGain.gain.linearRampCalls[0][0], 0.0001);
+    assert.ok(Math.abs(enemyGain.gain.linearRampCalls[0][1] - 30.55) < 0.001);
     enemySrc.onended?.();
     assert.equal(enemyGain.disconnected, true);
 
@@ -850,14 +974,14 @@ test('playEnemySpellCast and playPlayerHurt reuse decoded MP3 slices with anti-s
     engine.playEnemySpellCast('glacius', 21.5);
     assert.equal(sources.length, 2);
     assert.equal(sources[1].buffer?.tag, 'STUPEFY');
-    assert.ok(Math.abs(gains[gains.length - 1].gain.setCalls[0][0] - 0.14 * 0.15) < 0.0001);
+    assert.ok(Math.abs(gains[gains.length - 1].gain.setCalls[0][0] - 0.19 * 0.15) < 0.0001);
 
     // 4. Arrow swoosh uses 'wingardium'
     fakeNowMs = 2600;
     engine.playEnemySpellCast('wingardium', 0);
     assert.equal(sources.length, 3);
     assert.equal(sources[2].buffer?.tag, 'WINGARDIUM');
-    assert.ok(Math.abs(gains[gains.length - 1].gain.setCalls[0][0] - 0.14) < 0.0001);
+    assert.ok(Math.abs(gains[gains.length - 1].gain.setCalls[0][0] - 0.19) < 0.0001);
 
     // 5. playPlayerHurt uses decoded 'stupefy', scales gain by damage, throttles within 180ms, and never uses oscillator
     fakeNowMs = 3000;
@@ -870,20 +994,21 @@ test('playEnemySpellCast and playPlayerHurt reuse decoded MP3 slices with anti-s
     const hurtGain = gains[gains.length - 1];
     assert.equal(hurtSrc.buffer?.tag, 'STUPEFY');
     assert.ok(Math.abs(hurtSrc.startCalls[0][1] - 0.098) < 0.001);
-    assert.equal(hurtSrc.startCalls[0][2], 0.22);
+    assert.ok(Math.abs((hurtSrc.stopCalls[0] ?? 0) - 30.46) < 0.001);
     assert.ok(hurtSrc.playbackRate.value >= 0.72 && hurtSrc.playbackRate.value <= 0.8);
-    // damage=25 -> 0.24 + 0.5 * 0.14 = 0.31
-    assert.ok(Math.abs(hurtGain.gain.setCalls[0][0] - 0.31) < 0.0001);
-    assert.equal(hurtGain.gain.expRampCalls[0][0], 0.0001);
-    assert.ok(Math.abs(hurtGain.gain.expRampCalls[0][1] - 30.22) < 0.001);
+    // damage=25 -> 0.32 + 0.5 * 0.18 = 0.41
+    assert.ok(Math.abs(hurtGain.gain.setCalls[0][0] - 0.41) < 0.0001);
+    assert.ok(Math.abs(hurtGain.gain.setCalls[1][1] - 30.33) < 0.001);
+    assert.equal(hurtGain.gain.linearRampCalls[0][0], 0.0001);
+    assert.ok(Math.abs(hurtGain.gain.linearRampCalls[0][1] - 30.45) < 0.001);
     hurtSrc.onended?.();
     assert.equal(hurtGain.disconnected, true);
 
-    // High damage caps gain at 0.38 after throttle expires
+    // High damage caps gain at 0.50 after throttle expires
     fakeNowMs = 3200;
     engine.playPlayerHurt(120);
     assert.equal(sources.length, 5);
-    assert.ok(Math.abs(gains[gains.length - 1].gain.setCalls[0][0] - 0.38) < 0.0001);
+    assert.ok(Math.abs(gains[gains.length - 1].gain.setCalls[0][0] - 0.5) < 0.0001);
   } finally {
     performance.now = origPerfNow;
     g.window = prevWindow;

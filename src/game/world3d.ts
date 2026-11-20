@@ -10,7 +10,6 @@ import {
   shouldTriggerArcaneSwordExpiringSound,
   ControlSchemeId,
   applyElementalSpellCombo,
-  findAimedTargetOnRay,
   ArtifactId,
   ArtifactSlot,
   BARREL_RESPAWN_SEC,
@@ -143,6 +142,27 @@ import {
   WORM_PHASE1_MAX_HP,
   WORM_PHASE2_MAX_HP,
   WORM_PHASE3_MAX_HP,
+  BEAR_FEAR_COOLDOWN_SEC,
+  BEAR_FEAR_IMMUNITY_POST_SEC,
+  BEAR_FEAR_INITIAL_COOLDOWN_SEC,
+  canCaveBearUseFearRoar,
+  formatEnemyDisplayName,
+  isInstantBoulderShatterSpell,
+  SKELETON_EARTHQUAKE_ACTIVE_SEC,
+  SKELETON_EARTHQUAKE_TELEGRAPH_SEC,
+  SKELETON_SHIELD_ACTIVE_SEC,
+  SKELETON_SHIELD_COOLDOWN_SEC,
+  STONE_CRUSHER_BOULDER_COOLDOWN_SEC,
+  STONE_CRUSHER_BOULDER_HIT_RADIUS,
+  STONE_CRUSHER_BOULDER_HP,
+  STONE_CRUSHER_BOULDER_KNOCKBACK_M,
+  STONE_CRUSHER_BOULDER_PLAYER_IMPACT_RADIUS,
+  STONE_CRUSHER_BOULDER_RADIUS,
+  STONE_CRUSHER_BOULDER_SPEED,
+  WILD_BOAR_BASE_SPEED,
+  WILD_BOAR_CADENCE_SEC,
+  WILD_BOAR_MELEE_RANGE,
+  WILD_BOAR_WINDUP_SEC,
   WORM_RANGED_SURFACE_DURATION_SEC,
   WORM_SPLIT_HP_RATIO,
 } from './spells';
@@ -551,6 +571,9 @@ interface EnemyActor {
   burrowWarningRing?: THREE.Mesh;
   shieldGuardActive?: boolean;
   shieldGuardTimer?: number;
+  shieldBarrierMesh?: THREE.Mesh;
+  boulderCooldown?: number;
+  fearCooldown?: number;
   leechTelegraphTimer?: number;
   leechGlowTimer?: number;
   leechJumpCooldown?: number;
@@ -608,10 +631,27 @@ interface EarthquakeLineActor {
   direction: THREE.Vector3;
   length: number;
   width: number;
+  telegraphTimer: number;
   remainingSec: number;
   damage: number;
   hasHitPlayer: boolean;
   group: THREE.Group;
+  stripMesh: THREE.Mesh;
+  spikesGroup: THREE.Group;
+}
+
+interface RollingBoulderActor {
+  id: string;
+  mesh: THREE.Group;
+  rollPivot: THREE.Group;
+  position: THREE.Vector3;
+  direction: THREE.Vector3;
+  speed: number;
+  hp: number;
+  maxHp: number;
+  damage: number;
+  life: number;
+  ownerId: string;
 }
 
 interface IceRainZoneActor {
@@ -914,6 +954,8 @@ export class ArcaneWorldEngine {
   // Input tracking
   private keysHeld = new Set<string>();
   private keysJustPressed = new Set<string>();
+  private touchMoveX = 0;
+  private touchMoveZ = 0;
 
   // World entities
   private props: PhysicsProp[] = [];
@@ -942,6 +984,7 @@ export class ArcaneWorldEngine {
   private mudPuddles: MudPuddleActor[] = [];
   private firePools: FirePoolActor[] = [];
   private earthquakeLines: EarthquakeLineActor[] = [];
+  private rollingBoulders: RollingBoulderActor[] = [];
   private playerCombatEngageTimer = 0;
   private playerBurnTimer = 0;
   private playerBurnTickAccum = 0;
@@ -951,6 +994,7 @@ export class ArcaneWorldEngine {
   private playerSlowTimer = 0;
   private playerMudBallSlowTimer = 0;
   private playerFearTimer = 0;
+  private playerFearImmunityTimer = 0;
   private activeWingardiumLevel = 1;
   private remoteMeshes = new Map<
     string,
@@ -1017,8 +1061,16 @@ export class ArcaneWorldEngine {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.15;
-    this.renderer.setPixelRatio(this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2));
-    this.renderer.shadowMap.enabled = !this.isSoftwareGl;
+    const isMobile = isMobileTouchDevice();
+    const initDpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+    const initGfx = computeRendererGraphicsConfig(
+      this.graphicsQuality,
+      initDpr,
+      this.isSoftwareGl,
+      isMobile
+    );
+    this.renderer.setPixelRatio(initGfx.pixelRatio);
+    this.renderer.shadowMap.enabled = initGfx.shadowsEnabled;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
     const width = this.container.clientWidth || window.innerWidth;
@@ -1049,7 +1101,7 @@ export class ArcaneWorldEngine {
 
     const keyLight = new THREE.DirectionalLight(0xffe2b0, 1.65);
     keyLight.position.set(30, 52, 24);
-    if (!this.isSoftwareGl) {
+    if (initGfx.shadowsEnabled) {
       keyLight.castShadow = true;
       keyLight.shadow.mapSize.set(1024, 1024);
       const d = 60;
@@ -1085,6 +1137,13 @@ export class ArcaneWorldEngine {
 
   public setControlScheme(scheme: ControlSchemeId) {
     this.controlScheme = scheme;
+  }
+
+  public setTouchMoveVector(x: number, z: number) {
+    const safeX = Number.isFinite(x) ? x : 0;
+    const safeZ = Number.isFinite(z) ? z : 0;
+    this.touchMoveX = Math.max(-1, Math.min(1, safeX));
+    this.touchMoveZ = Math.max(-1, Math.min(1, safeZ));
   }
 
   public setRadarEnabled(enabled: boolean) {
@@ -1142,33 +1201,16 @@ export class ArcaneWorldEngine {
   public setGraphicsQuality(quality: GraphicsQuality) {
     this.graphicsQuality = quality;
     this.simplifiedGraphics = quality !== 'high';
+    const isMobile = isMobileTouchDevice();
     const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
-    if (quality === 'high') {
-      this.renderer.setPixelRatio(this.isSoftwareGl ? 1 : Math.min(dpr, 2));
-      this.renderer.domElement.style.imageRendering = 'auto';
-      this.renderer.shadowMap.enabled = !this.isSoftwareGl;
-      if (this.keyLightRef) {
-        this.keyLightRef.castShadow = !this.isSoftwareGl;
-      }
-      this.camera.far = 160;
-    } else if (quality === 'medium') {
-      this.renderer.setPixelRatio(Math.min(dpr, 0.85));
-      this.renderer.domElement.style.imageRendering = 'auto';
-      this.renderer.shadowMap.enabled = false;
-      if (this.keyLightRef) {
-        this.keyLightRef.castShadow = false;
-      }
-      this.camera.far = 78;
-    } else {
-      // 'ultralow' — maximum FPS mode: 0.5x internal resolution, pixelated upscale, zero shadows, aggressive frustum/fog culling
-      this.renderer.setPixelRatio(0.5);
-      this.renderer.domElement.style.imageRendering = 'pixelated';
-      this.renderer.shadowMap.enabled = false;
-      if (this.keyLightRef) {
-        this.keyLightRef.castShadow = false;
-      }
-      this.camera.far = 44;
+    const gfx = computeRendererGraphicsConfig(quality, dpr, this.isSoftwareGl, isMobile);
+    this.renderer.setPixelRatio(gfx.pixelRatio);
+    this.renderer.domElement.style.imageRendering = gfx.imageRendering;
+    this.renderer.shadowMap.enabled = gfx.shadowsEnabled;
+    if (this.keyLightRef) {
+      this.keyLightRef.castShadow = gfx.shadowsEnabled;
     }
+    this.camera.far = gfx.cameraFar;
 
     const maxTorchLights = quality === 'high' ? 6 : quality === 'medium' ? 4 : 0;
     for (let i = maxTorchLights; i < this.torchLightPool.length; i++) {
@@ -1364,6 +1406,11 @@ export class ArcaneWorldEngine {
     this.mudPuddles = [];
     this.firePools = [];
     this.earthquakeLines = [];
+    for (const boulder of this.rollingBoulders) {
+      this.worldContentGroup.remove(boulder.mesh);
+      this.disposeHierarchy(boulder.mesh);
+    }
+    this.rollingBoulders = [];
     this.harvestNodes = [];
     this.lootDrops = [];
     this.floorTraps = [];
@@ -1386,6 +1433,7 @@ export class ArcaneWorldEngine {
     this.playerSlowTimer = 0;
     this.playerMudBallSlowTimer = 0;
     this.playerFearTimer = 0;
+    this.playerFearImmunityTimer = 0;
     this.tookDamageThisStage = false;
     this.labyrinthWalls = [];
     this.labyrinthTorchPositions = [];
@@ -3025,6 +3073,7 @@ export class ArcaneWorldEngine {
       this.hp = this.maxHp;
       this.playerSlowTimer = 0;
       this.playerFearTimer = 0;
+      this.playerFearImmunityTimer = 0;
       this.playerBurnTimer = 0;
       this.playerStunTimer = 0;
     }
@@ -5065,7 +5114,7 @@ export class ArcaneWorldEngine {
             enemy.position.z - blastPos.z
           );
           if (knockDir.lengthSq() < 0.01) knockDir.set(0, 0, -1);
-          knockDir.normalize().multiplyScalar(14);
+          knockDir.normalize().multiplyScalar(7.5);
           this.damageEnemy(enemy, prop.throwDamage, knockDir, 0xff4500);
           enemiesHit++;
         }
@@ -5897,6 +5946,7 @@ export class ArcaneWorldEngine {
     animParts: EnemyAnimParts;
     chargeTrajectoryLine?: THREE.Mesh;
     burrowWarningRing?: THREE.Mesh;
+    shieldBarrierMesh?: THREE.Mesh;
   } {
     const group = new THREE.Group();
     const isFlying =
@@ -8606,6 +8656,14 @@ export class ArcaneWorldEngine {
       group.add(chargeTrajectoryLine);
     }
 
+    // Large glowing translucent cyan-gold curved barrier in front of Skeleton Hammer & Shield when Shield Guard is active
+    let shieldBarrierMesh: THREE.Mesh | undefined;
+    if (archetype === 'skeleton_hammer_shield') {
+      shieldBarrierMesh = buildSkeletonShieldBarrierMesh();
+      shieldBarrierMesh.visible = false;
+      group.add(shieldBarrierMesh);
+    }
+
     // Red Emergence / Jump Landing Circle (`burrowWarningRing`) on the floor for Stage 5 Worm Bosses & Mud Monsters
     let burrowWarningRing: THREE.Mesh | undefined;
     if (isStage5WormBossArchetype(archetype) || archetype === 'mud_monster') {
@@ -8697,6 +8755,7 @@ export class ArcaneWorldEngine {
       telegraphMesh,
       chargeTrajectoryLine,
       burrowWarningRing,
+      shieldBarrierMesh,
       hpBarCanvas,
       hpBarTexture,
       animParts,
@@ -8844,6 +8903,7 @@ export class ArcaneWorldEngine {
       telegraphMesh,
       chargeTrajectoryLine,
       burrowWarningRing,
+      shieldBarrierMesh,
       hpBarCanvas,
       hpBarTexture,
       animParts,
@@ -8861,9 +8921,9 @@ export class ArcaneWorldEngine {
     const baseSpeed =
       arch === 'boss_totem'
         ? 0
-        : arch === 'wild_boar' ||
-          arch === 'boss_worm_5_p2_melee' ||
-          arch === 'boss_worm_5_p3_burrower'
+        : arch === 'wild_boar'
+        ? WILD_BOAR_BASE_SPEED // Fastest regular mob (6.5 m/s)
+        : arch === 'boss_worm_5_p2_melee' || arch === 'boss_worm_5_p3_burrower'
         ? 4.95 // Fast boar-like rusher (`быстро набегает как кабаны`)!
         : arch === 'boss_worm_5_p3_leech' || arch === 'boss_worm_5_p3_fire_bomber'
         ? 4.45
@@ -8919,6 +8979,7 @@ export class ArcaneWorldEngine {
       mesh: group,
       telegraphMesh,
       chargeTrajectoryLine,
+      shieldBarrierMesh,
       hpBarCanvas,
       hpBarTexture,
       baseMaxHp,
@@ -8964,8 +9025,10 @@ export class ArcaneWorldEngine {
       leechLatchTimer: 0,
       leechTickAccum: 0,
       frostWindCooldown: 3.0 + (idx % 3) * 1.2,
-      shieldGuardTimer: 4.0,
+      shieldGuardTimer: SKELETON_SHIELD_COOLDOWN_SEC,
       shieldGuardActive: false,
+      boulderCooldown: STONE_CRUSHER_BOULDER_COOLDOWN_SEC,
+      fearCooldown: BEAR_FEAR_INITIAL_COOLDOWN_SEC,
       hasSplitWorm: false,
     };
     this.enemies.push(actor);
@@ -9000,6 +9063,8 @@ export class ArcaneWorldEngine {
     if (newMode === 'playing') {
       this.camera.rotation.set(0, 0, 0, 'YXZ');
     } else {
+      this.touchMoveX = 0;
+      this.touchMoveZ = 0;
       audioEngine.setCampfireLoop(false);
     }
   }
@@ -9627,62 +9692,82 @@ export class ArcaneWorldEngine {
     }
 
     // Special Handling 1: HEAL ('vera_verto' -> Хил / Сердце ♥)
+    // Strict exclusive targeting: if crosshair aims at a remote ally (<=18m, alongRay>0, dot>=0.94, perpDist<=1.35m),
+    // heal ONLY that ally; otherwise heal ONLY the local player.
     if (params.spellId === 'vera_verto') {
       const healVal = params.healAmount ?? 20;
-      this.hp = Math.min(this.maxHp, this.hp + healVal);
-      if (spellLevel >= 6) {
-        this.playerBurnTimer = 0;
-        this.playerStunTimer = 0;
-        this.playerRegenTimer = 4.0;
-      }
-      this.spawnParticles(_v2.copy(this.playerPos).setY(1.2), 0x22c55e, 28, 5.5);
-      this.callbacks.onQuestEvent('transfigure', 1);
-
-      let healedAllyName: string | null = null;
-      if (
-        this.mapMode === 'labyrinth' &&
-        this.labyrinthMultiplayerMode === 'shared' &&
-        this.remoteMeshes.size > 0
-      ) {
-        const candidates = Array.from(this.remoteMeshes.values()).map((entry) => entry.data);
-        const aimedAlly = findAimedTargetOnRay(
-          this.camera.position,
-          _forward,
-          candidates,
-          18,
-          1.45
-        );
-        if (aimedAlly) {
-          _v2.set(aimedAlly.x, aimedAlly.y + 1.1, aimedAlly.z);
-          if (
-            !segmentHitsWall(
-              this.camera.position.x,
-              this.camera.position.z,
-              aimedAlly.x,
-              aimedAlly.z,
-              this.labyrinthWalls,
-              0.15
-            )
-          ) {
-            this.spawnParticles(_v2, 0x22c55e, 26, 5.8);
-            this.callbacks.onMultiplayerHeal?.(aimedAlly.id, healVal);
-            healedAllyName = aimedAlly.name;
+      let aimedAlly: { id: string; name: string; x: number; y: number; z: number } | null = null;
+      if (this.remoteMeshes.size > 0) {
+        let bestDist = Infinity;
+        for (const [remoteId, entry] of this.remoteMeshes.entries()) {
+          const allyCenter = _v3.set(entry.data.x, entry.data.y + 1.1, entry.data.z);
+          const toAlly = _v2.copy(allyCenter).sub(this.camera.position);
+          const dist = toAlly.length();
+          if (dist > 0.2 && dist <= 18) {
+            const alongRay = toAlly.dot(_forward);
+            if (alongRay <= 0) continue;
+            const dot = alongRay / dist;
+            const perpSq = Math.max(0, dist * dist - alongRay * alongRay);
+            const perpDist = Math.sqrt(perpSq);
+            if (dot >= 0.94 && perpDist <= 1.35 && dist < bestDist) {
+              if (
+                !segmentHitsWall(
+                  this.camera.position.x,
+                  this.camera.position.z,
+                  entry.data.x,
+                  entry.data.z,
+                  this.labyrinthWalls,
+                  0.15
+                )
+              ) {
+                bestDist = dist;
+                aimedAlly = {
+                  id: remoteId,
+                  name: entry.data.name,
+                  x: entry.data.x,
+                  y: entry.data.y,
+                  z: entry.data.z,
+                };
+              }
+            }
           }
         }
       }
 
-      this.lastCastBanner = {
-        spellName: healedAllyName
-          ? `+${healVal} ОЗ вам и союзнику «${healedAllyName}»!`
-          : spellLevel >= 6
-          ? `+${healVal} ОЗ · Очищение + Регенерация 4с`
-          : `+${healVal} здоровья`,
-        qualityPercent: params.castQualityPercent,
-        damage: healVal,
-        detail: '',
-        color: '#22c55e',
-        timestamp: performance.now(),
-      };
+      this.callbacks.onQuestEvent('transfigure', 1);
+
+      if (aimedAlly) {
+        _v2.set(aimedAlly.x, aimedAlly.y + 1.1, aimedAlly.z);
+        this.spawnParticles(_v2, 0x22c55e, 28, 5.8);
+        this.callbacks.onMultiplayerHeal?.(aimedAlly.id, healVal);
+        this.lastCastBanner = {
+          spellName: `💚 +${healVal} ОЗ союзнику «${aimedAlly.name}»!`,
+          qualityPercent: params.castQualityPercent,
+          damage: healVal,
+          detail: '',
+          color: '#22c55e',
+          timestamp: performance.now(),
+        };
+      } else {
+        this.hp = Math.min(this.maxHp, this.hp + healVal);
+        if (spellLevel >= 6) {
+          this.playerBurnTimer = 0;
+          this.playerStunTimer = 0;
+          this.playerRegenTimer = 4.0;
+        }
+        this.spawnParticles(_v2.copy(this.playerPos).setY(1.2), 0x22c55e, 28, 5.5);
+        this.lastCastBanner = {
+          spellName:
+            spellLevel >= 6
+              ? `+${healVal} ОЗ · Очищение + Регенерация 4с`
+              : `+${healVal} здоровья`,
+          qualityPercent: params.castQualityPercent,
+          damage: healVal,
+          detail: '',
+          color: '#22c55e',
+          timestamp: performance.now(),
+        };
+      }
 
       return {
         origin: { x: spawnPos.x, y: spawnPos.y, z: spawnPos.z },
@@ -9842,6 +9927,10 @@ export class ArcaneWorldEngine {
           isThrown: true,
           throwDamage: thrown.throwDamage,
         });
+        return {
+          origin: { x: spawnPos.x, y: spawnPos.y, z: spawnPos.z },
+          direction: { x: _forward.x, y: _forward.y, z: _forward.z },
+        };
       } else {
         // Strict Direct-Aim Only for Wingardium Leviosa (`Левиоса`):
         // Only pulls a physics object if the player's crosshair ray points directly at it!
@@ -9881,14 +9970,9 @@ export class ArcaneWorldEngine {
             isHeld: true,
             isThrown: false,
           });
-        } else {
-          this.lastCastBanner = {
-            spellName: '🎯 Наведите прицел точно на предмет (щит, бочку или ящик)!',
-            qualityPercent: params.castQualityPercent,
-            damage: 0,
-            detail: '',
-            color: '#38bdf8',
-            timestamp: performance.now(),
+          return {
+            origin: { x: spawnPos.x, y: spawnPos.y, z: spawnPos.z },
+            direction: { x: _forward.x, y: _forward.y, z: _forward.z },
           };
         }
       }
@@ -10624,48 +10708,18 @@ export class ArcaneWorldEngine {
 
   /**
    * Spawns a Stage 5 Skeleton Hammer-Shield Linear Ground Earthquake (`полоской пошел урон в сторону меня типа землетрясение земли`)!
+   * Shows a pulsing red-orange forward floor telegraph along +Z for 1.0s before erupting rock spikes and dealing damage for 0.75s.
    */
   private spawnEarthquakeLine(origin: THREE.Vector3, dir: THREE.Vector3, damage: number) {
     const flatDir = dir.clone().setY(0).normalize();
     const length = SKELETON_EARTHQUAKE_LENGTH;
     const width = SKELETON_EARTHQUAKE_WIDTH;
 
-    const group = new THREE.Group();
+    const { group, stripMesh, spikesGroup } = buildEarthquakeLineVisual(length, width);
     group.position.set(origin.x, 0.06, origin.z);
     group.rotation.y = Math.atan2(flatDir.x, flatDir.z);
 
-    const stripGeo = new THREE.PlaneGeometry(width, length);
-    stripGeo.translate(0, length / 2, 0);
-    stripGeo.rotateX(-Math.PI / 2);
-    const strip = new THREE.Mesh(
-      stripGeo,
-      new THREE.MeshBasicMaterial({
-        color: 0xf59e0b,
-        side: THREE.DoubleSide,
-        transparent: true,
-        opacity: 0.78,
-        depthWrite: false,
-      })
-    );
-    group.add(strip);
-
-    const rockMat = new THREE.MeshStandardMaterial({
-      color: 0x78350f,
-      emissive: 0xd97706,
-      emissiveIntensity: 0.9,
-      roughness: 0.5,
-      flatShading: true,
-    });
-    for (let s = 1; s <= 7; s++) {
-      const dist = (s / 7) * (length - 0.8);
-      const spike = new THREE.Mesh(new THREE.ConeGeometry(0.42, 1.25, 5), rockMat);
-      spike.position.set((s % 2 === 0 ? 1 : -1) * 0.25, 0.6, dist);
-      group.add(spike);
-    }
-
     this.worldContentGroup.add(group);
-    audioEngine.playHeavyImpact(true);
-    this.cameraTrauma = Math.min(1, this.cameraTrauma + 0.28);
 
     this.earthquakeLines.push({
       id: `eq_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -10673,11 +10727,73 @@ export class ArcaneWorldEngine {
       direction: flatDir,
       length,
       width,
-      remainingSec: 1.0,
+      telegraphTimer: SKELETON_EARTHQUAKE_TELEGRAPH_SEC,
+      remainingSec: SKELETON_EARTHQUAKE_ACTIVE_SEC,
       damage,
       hasHitPlayer: false,
       group,
+      stripMesh,
+      spikesGroup,
     });
+  }
+
+  /**
+   * Spawns a giant destructible homing Rolling Stone Boulder for Stone Crusher (`stone_crusher`).
+   */
+  private spawnRollingBoulder(owner: EnemyActor, dir: THREE.Vector3) {
+    const flatDir = dir.clone().setY(0);
+    if (flatDir.lengthSq() < 1e-6) flatDir.set(0, 0, 1);
+    flatDir.normalize();
+
+    const spawnPos = new THREE.Vector3(
+      owner.position.x + flatDir.x * 2.0,
+      STONE_CRUSHER_BOULDER_RADIUS,
+      owner.position.z + flatDir.z * 2.0
+    );
+    if (
+      this.mapMode === 'labyrinth' &&
+      segmentHitsWall(
+        owner.position.x,
+        owner.position.z,
+        spawnPos.x,
+        spawnPos.z,
+        this.getActiveLabyrinthWalls(),
+        1.0
+      )
+    ) {
+      spawnPos.set(owner.position.x, STONE_CRUSHER_BOULDER_RADIUS, owner.position.z);
+    }
+
+    const { group, rollPivot } = buildRollingBoulderMesh();
+    group.position.copy(spawnPos);
+    this.worldContentGroup.add(group);
+    this.spawnParticles(_v1.copy(spawnPos).setY(0.8), 0x78716c, 18, 5.5);
+    this.spawnParticles(_v1.copy(spawnPos).setY(1.2), 0xf97316, 12, 5.0);
+    audioEngine.playHeavyImpact(false);
+
+    this.rollingBoulders.push({
+      id: `boulder_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      mesh: group,
+      rollPivot,
+      position: spawnPos,
+      direction: flatDir,
+      speed: STONE_CRUSHER_BOULDER_SPEED,
+      hp: STONE_CRUSHER_BOULDER_HP,
+      maxHp: STONE_CRUSHER_BOULDER_HP,
+      damage: this.getScaledEnemyDamage(28),
+      life: 11.0,
+      ownerId: owner.id,
+    });
+  }
+
+  private shatterRollingBoulder(index: number, colorHex = 0xf97316) {
+    const boulder = this.rollingBoulders[index];
+    if (!boulder) return;
+    this.spawnParticles(_v1.copy(boulder.position), 0x57534e, 26, 7.5);
+    this.spawnParticles(_v1.copy(boulder.position), colorHex, 20, 6.8);
+    this.worldContentGroup.remove(boulder.mesh);
+    this.disposeHierarchy(boulder.mesh);
+    this.rollingBoulders.splice(index, 1);
   }
 
   /**
@@ -11461,6 +11577,10 @@ export class ArcaneWorldEngine {
       this.playerFearTimer = Math.max(0, this.playerFearTimer - dt);
     }
 
+    if (this.playerFearImmunityTimer > 0) {
+      this.playerFearImmunityTimer = Math.max(0, this.playerFearImmunityTimer - dt);
+    }
+
     if (this.playerRegenTimer > 0) {
       this.playerRegenTimer = Math.max(0, this.playerRegenTimer - dt);
       this.hp = Math.min(this.maxHp, this.hp + 5.0 * dt);
@@ -11619,12 +11739,38 @@ export class ArcaneWorldEngine {
       }
     }
 
-    // Update Stage 5 Skeleton Hammer Earthquake Lines (linear ground shockwave strip!)
+    // Update Stage 5 Skeleton Hammer Earthquake Lines (1.0s pulsing forward telegraph -> 0.75s active spikes & damage!)
     for (let i = this.earthquakeLines.length - 1; i >= 0; i--) {
       const eq = this.earthquakeLines[i];
+      const stripMat = eq.stripMesh.material as THREE.MeshBasicMaterial;
+      if (eq.telegraphTimer > 0) {
+        eq.telegraphTimer = Math.max(0, eq.telegraphTimer - dt);
+        stripMat.color.setHex(0xef4444);
+        stripMat.opacity = 0.42 + Math.abs(Math.sin(performance.now() * 0.015)) * 0.42;
+        if (eq.telegraphTimer <= 0) {
+          eq.spikesGroup.visible = true;
+          stripMat.color.setHex(0xf59e0b);
+          stripMat.opacity = 0.85;
+          audioEngine.playHeavyImpact(true);
+          this.cameraTrauma = Math.min(1, this.cameraTrauma + 0.28);
+          this.spawnParticles(
+            _v1.set(
+              eq.origin.x + eq.direction.x * (eq.length * 0.5),
+              0.7,
+              eq.origin.z + eq.direction.z * (eq.length * 0.5)
+            ),
+            0xf59e0b,
+            18,
+            6.5
+          );
+        }
+        continue;
+      }
+
       eq.remainingSec -= dt;
       if (eq.remainingSec <= 0) {
         this.worldContentGroup.remove(eq.group);
+        this.disposeHierarchy(eq.group);
         this.earthquakeLines.splice(i, 1);
         continue;
       }
@@ -11660,6 +11806,90 @@ export class ArcaneWorldEngine {
       }
     }
 
+    // Update Stage 4 Stone Crusher Giant Homing Rolling Boulders
+    for (let i = this.rollingBoulders.length - 1; i >= 0; i--) {
+      const boulder = this.rollingBoulders[i];
+      boulder.life -= dt;
+      if (boulder.life <= 0) {
+        this.shatterRollingBoulder(i);
+        continue;
+      }
+
+      // Smoothly home toward player on the XZ plane
+      const dx = this.playerPos.x - boulder.position.x;
+      const dz = this.playerPos.z - boulder.position.z;
+      const dLen = Math.hypot(dx, dz);
+      if (dLen > 0.05) {
+        const turnBlend = 1 - Math.exp(-2.1 * dt);
+        boulder.direction.x = THREE.MathUtils.lerp(boulder.direction.x, dx / dLen, turnBlend);
+        boulder.direction.z = THREE.MathUtils.lerp(boulder.direction.z, dz / dLen, turnBlend);
+        boulder.direction.y = 0;
+        if (boulder.direction.lengthSq() > 1e-6) {
+          boulder.direction.normalize();
+        }
+      }
+
+      const prevX = boulder.position.x;
+      const prevZ = boulder.position.z;
+      const stepDist = boulder.speed * dt;
+      const nextX = prevX + boulder.direction.x * stepDist;
+      const nextZ = prevZ + boulder.direction.z * stepDist;
+
+      // Wall collision smashes the boulder
+      const wallHit =
+        this.mapMode === 'labyrinth'
+          ? segmentHitsWall(prevX, prevZ, nextX, nextZ, this.getActiveLabyrinthWalls(), 1.1)
+          : Math.abs(nextX) > 28 || Math.abs(nextZ) > 28;
+      if (wallHit) {
+        audioEngine.playHeavyImpact(false);
+        this.shatterRollingBoulder(i);
+        continue;
+      }
+
+      boulder.position.set(nextX, STONE_CRUSHER_BOULDER_RADIUS, nextZ);
+      boulder.mesh.position.copy(boulder.position);
+
+      // Visually roll around horizontal axis perpendicular to travel direction (up x dir = (dir.z, 0, -dir.x))
+      _v1.set(boulder.direction.z, 0, -boulder.direction.x);
+      if (_v1.lengthSq() > 1e-6) {
+        _v1.normalize();
+        boulder.rollPivot.rotateOnWorldAxis(_v1, stepDist / STONE_CRUSHER_BOULDER_RADIUS);
+      }
+
+      // Player impact check
+      const distToPlayer = Math.hypot(
+        this.playerPos.x - boulder.position.x,
+        this.playerPos.z - boulder.position.z
+      );
+      if (distToPlayer < STONE_CRUSHER_BOULDER_PLAYER_IMPACT_RADIUS && this.mode === 'playing') {
+        this.damagePlayer(boulder.damage);
+        const pushX = this.playerPos.x - boulder.position.x;
+        const pushZ = this.playerPos.z - boulder.position.z;
+        const pushLen = Math.hypot(pushX, pushZ);
+        if (pushLen > 0.01) {
+          this.playerPos.x += (pushX / pushLen) * STONE_CRUSHER_BOULDER_KNOCKBACK_M;
+          this.playerPos.z += (pushZ / pushLen) * STONE_CRUSHER_BOULDER_KNOCKBACK_M;
+        } else {
+          this.playerPos.x += boulder.direction.x * STONE_CRUSHER_BOULDER_KNOCKBACK_M;
+          this.playerPos.z += boulder.direction.z * STONE_CRUSHER_BOULDER_KNOCKBACK_M;
+        }
+        if (this.mapMode === 'labyrinth') {
+          this.resolveLabyrinthCollisions(this.playerPos, 0.55);
+        }
+        audioEngine.playHeavyImpact(true);
+        this.cameraTrauma = Math.min(1, this.cameraTrauma + 0.52);
+        this.lastCastBanner = {
+          spellName: `🪨 Катящийся валун! -${boulder.damage} ОЗ (разбивайте [3] Удар / [4] Стоп)!`,
+          qualityPercent: 100,
+          damage: boulder.damage,
+          detail: '',
+          color: '#f97316',
+          timestamp: performance.now(),
+        };
+        this.shatterRollingBoulder(i);
+      }
+    }
+
     // 1. Player First-Person WASD / Arrow Movement (disabled while stunned; forced backward for 1.5s during Cave Bear Fear Roar!)
     let moveZ = 0;
     let moveX = 0;
@@ -11673,6 +11903,9 @@ export class ArcaneWorldEngine {
       if (this.keysHeld.has('KeyD') || this.keysHeld.has('ArrowRight')) moveX += 1;
       if (this.keysHeld.has('KeyA') || this.keysHeld.has('ArrowLeft')) moveX -= 1;
 
+      moveX += this.touchMoveX;
+      moveZ += this.touchMoveZ;
+
       if (this.keysHeld.has('KeyQ')) this.yaw += dt * 1.9;
       if (this.keysHeld.has('KeyT')) this.yaw -= dt * 1.9;
     }
@@ -11682,7 +11915,10 @@ export class ArcaneWorldEngine {
 
     _v1.set(0, 0, 0);
     if (moveZ !== 0 || moveX !== 0) {
-      _v1.addScaledVector(_forward, moveZ).addScaledVector(_right, moveX).normalize();
+      _v1.addScaledVector(_forward, moveZ).addScaledVector(_right, moveX);
+      if (_v1.lengthSq() > 1) {
+        _v1.normalize();
+      }
     }
 
     const speedBuffMult = this.playerSpeedBuffTimer > 0 ? 1.25 : 1.0;
@@ -12623,6 +12859,9 @@ export class ArcaneWorldEngine {
         if (enemy.burrowWarningRing) {
           enemy.burrowWarningRing.visible = false;
         }
+        if (enemy.shieldBarrierMesh) {
+          enemy.shieldBarrierMesh.visible = false;
+        }
         enemy.mesh.rotation.x = THREE.MathUtils.lerp(
           enemy.mesh.rotation.x,
           -Math.PI / 2,
@@ -13081,14 +13320,31 @@ export class ArcaneWorldEngine {
         }
       }
 
-      // Stage 5 Skeleton Hammer Shield (`skeleton_hammer_shield`): cycles Shield Guard stance!
+      // Stage 5 Cave Bear (`cave_bear`): decrement Fear Roar cooldown
+      if (enemy.archetype === 'cave_bear' && (enemy.fearCooldown ?? 0) > 0) {
+        enemy.fearCooldown = Math.max(0, (enemy.fearCooldown ?? 0) - dt);
+      }
+
+      // Stage 5 Skeleton Hammer Shield (`skeleton_hammer_shield`): cycles Shield Guard stance (3.0s active / 9.5s cooldown)
       if (enemy.archetype === 'skeleton_hammer_shield') {
-        enemy.shieldGuardTimer = (enemy.shieldGuardTimer ?? 4.0) - dt;
+        enemy.shieldGuardTimer = (enemy.shieldGuardTimer ?? SKELETON_SHIELD_COOLDOWN_SEC) - dt;
         if (enemy.shieldGuardTimer <= 0) {
           enemy.shieldGuardActive = !enemy.shieldGuardActive;
-          enemy.shieldGuardTimer = enemy.shieldGuardActive ? 3.5 : 4.5;
+          enemy.shieldGuardTimer = enemy.shieldGuardActive
+            ? SKELETON_SHIELD_ACTIVE_SEC
+            : SKELETON_SHIELD_COOLDOWN_SEC;
+          if (enemy.shieldBarrierMesh) {
+            enemy.shieldBarrierMesh.visible = Boolean(enemy.shieldGuardActive);
+          }
+          this.drawEnemyHpBarCanvas(
+            enemy.hpBarCanvas,
+            enemy.hpBarTexture,
+            formatEnemyDisplayName(enemy.name, enemy.shieldGuardActive),
+            enemy.hp,
+            enemy.maxHp
+          );
           if (enemy.shieldGuardActive) {
-            this.spawnParticles(_v1.copy(enemy.position).setY(1.2), 0x38bdf8, 12, 3.5);
+            this.spawnParticles(_v1.copy(enemy.position).setY(1.2), 0x38bdf8, 16, 4.2);
           }
         }
       }
@@ -13223,6 +13479,19 @@ export class ArcaneWorldEngine {
           }
           continue;
         }
+
+        // Stone Crusher (`stone_crusher`): every 5.0s when awake, has line of sight, and not charging, spawns a giant homing rolling boulder!
+        if (enemy.archetype === 'stone_crusher') {
+          enemy.boulderCooldown = Math.max(
+            0,
+            (enemy.boulderCooldown ?? STONE_CRUSHER_BOULDER_COOLDOWN_SEC) - dt * freezeFactor
+          );
+          if (enemy.boulderCooldown <= 0 && hasLineOfSight && distToPlayer < 28) {
+            enemy.boulderCooldown = STONE_CRUSHER_BOULDER_COOLDOWN_SEC;
+            const boulderDir = _v3.copy(_v2).setY(0).normalize();
+            this.spawnRollingBoulder(enemy, boulderDir);
+          }
+        }
       }
 
       const dirToPlayer = _v3.copy(_v2).normalize();
@@ -13304,7 +13573,7 @@ export class ArcaneWorldEngine {
             enemy.state = 'windup';
             enemy.stateTimer =
               enemy.archetype === 'wild_boar'
-                ? 0.58
+                ? WILD_BOAR_WINDUP_SEC
                 : this.mapMode === 'labyrinth'
                 ? 0.8
                 : 0.5;
@@ -13374,7 +13643,7 @@ export class ArcaneWorldEngine {
           }
           enemy.stateTimer -= dt * freezeFactor;
           if (
-            (distToPlayer < 5.6 || enemy.stateTimer <= 0) &&
+            (distToPlayer < 5.6 || (enemy.archetype !== 'stone_crusher' && enemy.stateTimer <= 0)) &&
             hasLineOfSight &&
             activeAttackers < maxConcurrentAttackers
           ) {
@@ -13420,6 +13689,10 @@ export class ArcaneWorldEngine {
       } else if (enemy.state === 'windup') {
         activeAttackers++;
         enemy.stateTimer -= dt * freezeFactor;
+        if (enemy.archetype === 'wild_boar' && hasLineOfSight && distToPlayer > 1.35) {
+          // Keep Wild Boar charging forward during windup so stepping back never makes it whiff in place!
+          enemy.position.addScaledVector(dirToPlayer, 0.85 * enemy.speed * freezeFactor * dt);
+        }
         const mat = enemy.telegraphMesh.material as THREE.MeshBasicMaterial;
         mat.opacity = 0.55 + Math.sin(performance.now() * 0.025) * 0.3;
         enemy.telegraphMesh.scale.setScalar(1.0 + (1 - enemy.stateTimer) * 0.45);
@@ -13484,14 +13757,22 @@ export class ArcaneWorldEngine {
             }
           } else if (enemy.archetype === 'cave_bear') {
             // Stage 5 Cave Bear (`Пещерный Медведь`):
-            // Attack 0: Fear Roar ("рыкнет в радиусе от него твой герой убегает назад 1.5 секунды")
-            // Attack 1: Wide Cleave ("подбегает и бьет в широком радиусе")
-            enemy.attackCycle = (enemy.attackCycle + 1) % 2;
-            if (enemy.attackCycle === 0 && distToPlayer <= BEAR_FEAR_RADIUS) {
+            // Fear Roar ONLY when off 12s cooldown and player is not feared or fear-immune (6s post-fear immunity);
+            // otherwise performs its melee paw cleave.
+            if (
+              canCaveBearUseFearRoar(
+                enemy.fearCooldown ?? 0,
+                this.playerFearTimer,
+                this.playerFearImmunityTimer,
+                distToPlayer
+              )
+            ) {
+              enemy.fearCooldown = BEAR_FEAR_COOLDOWN_SEC;
               this.spawnParticles(_v1.copy(enemy.position).setY(1.8), 0xef4444, 28, 7.0);
               audioEngine.playHeavyImpact(false);
               if (isTargetingLocal) {
                 this.playerFearTimer = Math.max(this.playerFearTimer, BEAR_FEAR_DURATION_SEC);
+                this.playerFearImmunityTimer = BEAR_FEAR_DURATION_SEC + BEAR_FEAR_IMMUNITY_POST_SEC;
                 const roarDmg = this.getScaledEnemyDamage(10);
                 this.damagePlayer(roarDmg);
                 this.lastCastBanner = {
@@ -13725,49 +14006,11 @@ export class ArcaneWorldEngine {
               }
             }
           } else if (enemy.archetype === 'stone_crusher') {
-            // Stage 4 Earth Elemental (`Каменный Крушитель`) alternates between Primary Attack (melee slam / single boulder)
-            // and Alternative Attack (`Каменный обвал`: 3-boulder seismic fan + ground shockwave), plus its 7s Bull Charge!
-            enemy.attackCycle = (enemy.attackCycle + 1) % 2;
-            if (enemy.attackCycle === 0) {
-              enemy.velocity.copy(dirToPlayer).multiplyScalar(8.5);
-              if (isTargetingLocal && distToPlayer < 4.5) {
-                this.damagePlayer(this.getScaledEnemyDamage(18));
-              } else {
-                this.spawnSpellProjectile({
-                  spellId: 'stupefy',
-                  casterId: 'enemy',
-                  origin: _v1.copy(enemy.position).setY(1.5),
-                  direction: dirToPlayer,
-                  damage: this.getScaledEnemyDamage(16),
-                  qualityPercent: 90,
-                  colorHex: 0xd97706,
-                });
-              }
-            } else {
-              const rockOrigin = _v1.copy(enemy.position).setY(1.45);
-              const boulderAngles = [-0.25, 0, 0.25];
-              for (const ang of boulderAngles) {
-                const cosA = Math.cos(ang);
-                const sinA = Math.sin(ang);
-                const spreadDir = new THREE.Vector3(
-                  dirToPlayer.x * cosA - dirToPlayer.z * sinA,
-                  0,
-                  dirToPlayer.x * sinA + dirToPlayer.z * cosA
-                ).normalize();
-                this.spawnSpellProjectile({
-                  spellId: 'stupefy',
-                  casterId: 'enemy',
-                  origin: rockOrigin.clone(),
-                  direction: spreadDir,
-                  damage: this.getScaledEnemyDamage(15),
-                  qualityPercent: 92,
-                  colorHex: 0xf59e0b,
-                });
-              }
-              this.spawnParticles(_v1.copy(enemy.position).setY(0.3), 0xd97706, 22, 6.5);
-              if (isTargetingLocal && distToPlayer < 6.2) {
-                this.damagePlayer(this.getScaledEnemyDamage(16));
-              }
+            // Stage 4 Earth Elemental (`Каменный Крушитель`): melee slam + ground shockwave (no mage orbs — uses Giant Homing Rolling Boulder + 7s Bull Charge!)
+            enemy.velocity.copy(dirToPlayer).multiplyScalar(8.5);
+            this.spawnParticles(_v1.copy(enemy.position).setY(0.3), 0xd97706, 20, 6.2);
+            if (isTargetingLocal && distToPlayer < 4.8) {
+              this.damagePlayer(this.getScaledEnemyDamage(18));
             }
           } else if (enemy.archetype === 'boss_elemental_4') {
             enemy.attackCycle = (enemy.attackCycle + 1) % 4;
@@ -13917,7 +14160,7 @@ export class ArcaneWorldEngine {
             }
           } else if (enemy.archetype === 'wild_boar') {
             enemy.velocity.copy(dirToPlayer).multiplyScalar(11.5);
-            if (isTargetingLocal && distToPlayer < 4.1) {
+            if (isTargetingLocal && distToPlayer < WILD_BOAR_MELEE_RANGE) {
               const boarDmg = this.getScaledEnemyDamage(11);
               this.damagePlayer(boarDmg);
               this.playerSlowTimer = BOAR_SLOW_DURATION_SEC;
@@ -13947,6 +14190,8 @@ export class ArcaneWorldEngine {
                 : 1.35
               : enemy.archetype === 'boss_elemental_4' || isStage5WormBossArchetype(enemy.archetype)
               ? 1.15
+              : enemy.archetype === 'wild_boar'
+              ? WILD_BOAR_CADENCE_SEC
               : enemy.archetype === 'boss_mage_2'
               ? 1.5
               : enemy.archetype === 'boss_mage_1'
@@ -14118,6 +14363,36 @@ export class ArcaneWorldEngine {
           hit = true;
         }
       } else if (proj.casterId === 'local') {
+        // Destructible Rolling Stone Boulders: [3] Expelliarmus / [4] Stupefy shatter in 1 hit; other spells deal HP damage
+        for (let bIdx = this.rollingBoulders.length - 1; bIdx >= 0; bIdx--) {
+          const boulder = this.rollingBoulders[bIdx];
+          if (proj.position.distanceTo(boulder.position) < STONE_CRUSHER_BOULDER_HIT_RADIUS) {
+            const instantBreak = isInstantBoulderShatterSpell(proj.spellId);
+            const appliedDmg = instantBreak
+              ? boulder.hp
+              : Math.max(1, Math.round(proj.damage));
+            boulder.hp = Math.max(0, boulder.hp - appliedDmg);
+            this.spawnFloatingDamageNumber(
+              _v1.copy(boulder.position).setY(boulder.position.y + 1.5),
+              appliedDmg,
+              instantBreak ? 0xfde047 : proj.color.getHex(),
+              instantBreak
+            );
+            if (boulder.hp <= 0) {
+              audioEngine.playHeavyImpact(true, proj.spellId);
+              this.shatterRollingBoulder(bIdx, instantBreak ? 0xfde047 : proj.color.getHex());
+            } else {
+              audioEngine.playHeavyImpact(false, proj.spellId);
+              this.spawnParticles(proj.position, 0xf97316, 12, 5.5);
+            }
+            hit = true;
+            break;
+          }
+        }
+        if (hit) {
+          this.removeAndDisposeProjectile(i);
+          continue;
+        }
         const isLv6 = (proj.spellLevel ?? 1) >= 6;
         for (const enemy of this.enemies) {
           if (enemy.state === 'ko') continue;
@@ -14484,7 +14759,7 @@ export class ArcaneWorldEngine {
     this.drawEnemyHpBarCanvas(
       enemy.hpBarCanvas,
       enemy.hpBarTexture,
-      enemy.name,
+      formatEnemyDisplayName(enemy.name, enemy.shieldGuardActive),
       enemy.hp,
       enemy.maxHp
     );
@@ -15363,6 +15638,11 @@ export class ArcaneWorldEngine {
     for (let i = this.projectiles.length - 1; i >= 0; i--) {
       this.removeAndDisposeProjectile(i);
     }
+    for (const boulder of this.rollingBoulders) {
+      this.worldContentGroup.remove(boulder.mesh);
+      this.disposeHierarchy(boulder.mesh);
+    }
+    this.rollingBoulders = [];
     this.disposeHierarchy(this.worldContentGroup);
     while (this.worldContentGroup.children.length > 0) {
       this.worldContentGroup.remove(this.worldContentGroup.children[0]);
@@ -15739,3 +16019,237 @@ export function buildRemoteWizardMesh(staffId: string, detailed: boolean): THREE
   root.add(staffGroup);
   return root;
 }
+
+/**
+ * Builds the giant rolling granite boulder for Stone Crusher (`stone_crusher`).
+ * Radius is STONE_CRUSHER_BOULDER_RADIUS (1.45m, ~2x larger than the Mud Monster's mud ball)
+ * with embedded glowing orange crack crystals so rolling motion reads clearly in motion.
+ */
+export function buildRollingBoulderMesh(): { group: THREE.Group; rollPivot: THREE.Group } {
+  const group = new THREE.Group();
+  group.name = 'stone_crusher_rolling_boulder';
+
+  const rollPivot = new THREE.Group();
+  rollPivot.name = 'boulder_roll_pivot';
+
+  const graniteMat = new THREE.MeshStandardMaterial({
+    color: 0x3f3f46,
+    roughness: 0.92,
+    metalness: 0.08,
+    flatShading: true,
+  });
+  const crackCrystalMat = new THREE.MeshStandardMaterial({
+    color: 0xf97316,
+    emissive: 0xea580c,
+    emissiveIntensity: 1.65,
+    roughness: 0.25,
+    metalness: 0.15,
+    flatShading: true,
+  });
+
+  const core = new THREE.Mesh(
+    new THREE.DodecahedronGeometry(STONE_CRUSHER_BOULDER_RADIUS, 1),
+    graniteMat
+  );
+  core.name = 'boulder_granite_core';
+  rollPivot.add(core);
+
+  // Embedded glowing orange crack crystal ridges at 6 opposing axes so physical roll rotation is unmistakable
+  const crystalDirs: Array<[number, number, number]> = [
+    [1, 0.35, 0.2],
+    [-1, -0.25, 0.35],
+    [0.25, 1, -0.2],
+    [-0.3, -1, 0.25],
+    [0.2, -0.25, 1],
+    [-0.25, 0.3, -1],
+  ];
+  const crystalGeo = new THREE.OctahedronGeometry(0.42, 0);
+  for (let i = 0; i < crystalDirs.length; i++) {
+    const [dx, dy, dz] = crystalDirs[i];
+    const len = Math.hypot(dx, dy, dz) || 1;
+    const nx = dx / len;
+    const ny = dy / len;
+    const nz = dz / len;
+    const crystal = new THREE.Mesh(crystalGeo, crackCrystalMat);
+    crystal.name = `boulder_crack_crystal_${i}`;
+    crystal.scale.set(0.65, 1.45, 0.45);
+    crystal.position.set(
+      nx * (STONE_CRUSHER_BOULDER_RADIUS * 0.88),
+      ny * (STONE_CRUSHER_BOULDER_RADIUS * 0.88),
+      nz * (STONE_CRUSHER_BOULDER_RADIUS * 0.88)
+    );
+    crystal.lookAt(nx * 4, ny * 4, nz * 4);
+    rollPivot.add(crystal);
+  }
+
+  group.add(rollPivot);
+  return { group, rollPivot };
+}
+
+/**
+ * Builds the curved translucent cyan-gold protective shield barrier mounted in front (+Z)
+ * of Skeleton Hammer & Shield (`skeleton_hammer_shield`) while its Shield Guard is active.
+ */
+export function buildSkeletonShieldBarrierMesh(): THREE.Mesh {
+  const barrierGeo = new THREE.CylinderGeometry(
+    1.15,
+    1.15,
+    2.2,
+    12,
+    1,
+    true,
+    -Math.PI * 0.45,
+    Math.PI * 0.9
+  );
+  const barrierMat = new THREE.MeshStandardMaterial({
+    color: 0x38bdf8,
+    emissive: 0x38bdf8,
+    emissiveIntensity: 1.35,
+    transparent: true,
+    opacity: 0.42,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    roughness: 0.22,
+    metalness: 0.15,
+  });
+  const barrierMesh = new THREE.Mesh(barrierGeo, barrierMat);
+  barrierMesh.name = 'skeleton_shield_barrier';
+  barrierMesh.position.set(0, 1.25, 0.12);
+
+  const rimMat = new THREE.MeshBasicMaterial({
+    color: 0xf59e0b,
+    transparent: true,
+    opacity: 0.85,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const rimGeo = new THREE.CylinderGeometry(
+    1.17,
+    1.17,
+    0.08,
+    12,
+    1,
+    true,
+    -Math.PI * 0.45,
+    Math.PI * 0.9
+  );
+  const topRim = new THREE.Mesh(rimGeo, rimMat);
+  topRim.position.y = 1.06;
+  const bottomRim = new THREE.Mesh(rimGeo, rimMat);
+  bottomRim.position.y = -1.06;
+  barrierMesh.add(topRim, bottomRim);
+
+  barrierMesh.visible = false;
+  return barrierMesh;
+}
+
+/**
+ * Builds the forward (+Z) Earthquake Line telegraph strip and initially hidden rock spikes group
+ * for Skeleton Hammer & Shield (`skeleton_hammer_shield`).
+ * Uses `translate(0, length / 2, 0)` + `rotateX(+Math.PI / 2)` so the warning strip extends strictly
+ * forward along +Z ([0, +length]), matching the rock spikes and `group.rotation.y`.
+ */
+export function buildEarthquakeLineVisual(
+  length: number,
+  width: number
+): { group: THREE.Group; stripMesh: THREE.Mesh; spikesGroup: THREE.Group } {
+  const group = new THREE.Group();
+  group.name = 'earthquake_line_group';
+
+  const stripGeo = new THREE.PlaneGeometry(width, length);
+  stripGeo.translate(0, length / 2, 0);
+  stripGeo.rotateX(Math.PI / 2);
+
+  const stripMat = new THREE.MeshBasicMaterial({
+    color: 0xef4444,
+    transparent: true,
+    opacity: 0.78,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const stripMesh = new THREE.Mesh(stripGeo, stripMat);
+  stripMesh.name = 'earthquake_telegraph_strip';
+  stripMesh.position.y = 0.08;
+  group.add(stripMesh);
+
+  const spikesGroup = new THREE.Group();
+  spikesGroup.name = 'earthquake_spikes_group';
+  spikesGroup.visible = false;
+
+  const rockMat = new THREE.MeshStandardMaterial({
+    color: 0x57534e,
+    emissive: 0x7c2d12,
+    emissiveIntensity: 0.45,
+    roughness: 0.9,
+    flatShading: true,
+  });
+  const spikeGeo = new THREE.ConeGeometry(0.42, 1.4, 5);
+  for (let s = 1; s <= 7; s++) {
+    const spike = new THREE.Mesh(spikeGeo, rockMat);
+    spike.position.set(
+      (s % 2 === 0 ? 1 : -1) * 0.35,
+      0.7,
+      (s / 7) * Math.max(1.5, length - 0.8)
+    );
+    spikesGroup.add(spike);
+  }
+  group.add(spikesGroup);
+
+  return { group, stripMesh, spikesGroup };
+}
+
+/**
+ * Detects touch / coarse-pointer mobile devices (Android/iOS) so WebGL renderer settings
+ * cap DPR and disable heavy shadow maps to prevent GPU thermal throttling.
+ */
+export function isMobileTouchDevice(): boolean {
+  if (typeof window === 'undefined') return false;
+  const coarsePointer =
+    typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
+  const touchPoints =
+    typeof navigator !== 'undefined' && typeof navigator.maxTouchPoints === 'number'
+      ? navigator.maxTouchPoints
+      : 0;
+  return coarsePointer || touchPoints > 0;
+}
+
+/**
+ * Resolves WebGL renderer pixelRatio, shadowMap, and frustum settings for a given quality tier.
+ * On mobile touch devices, 'high' caps pixelRatio at 1.35 and disables shadowMap to avoid Android GPU lag.
+ */
+export function computeRendererGraphicsConfig(
+  quality: GraphicsQuality,
+  dpr: number,
+  isSoftwareGl: boolean,
+  isMobile: boolean
+): {
+  pixelRatio: number;
+  shadowsEnabled: boolean;
+  cameraFar: number;
+  imageRendering: 'auto' | 'pixelated';
+} {
+  if (quality === 'high') {
+    return {
+      pixelRatio: isSoftwareGl ? 1 : Math.min(dpr, isMobile ? 1.35 : 2),
+      shadowsEnabled: !isSoftwareGl && !isMobile,
+      cameraFar: 160,
+      imageRendering: 'auto',
+    };
+  }
+  if (quality === 'medium') {
+    return {
+      pixelRatio: Math.min(dpr, 0.85),
+      shadowsEnabled: false,
+      cameraFar: 78,
+      imageRendering: 'auto',
+    };
+  }
+  return {
+    pixelRatio: 0.5,
+    shadowsEnabled: false,
+    cameraFar: 44,
+    imageRendering: 'pixelated',
+  };
+}
+
+

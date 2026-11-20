@@ -7866,14 +7866,14 @@ export function computePlayerVitalsAfterXpGain(params: {
   };
 }
 
-export type ControlSchemeId = 'classic' | 'alternative';
+export type ControlSchemeId = 'classic' | 'alternative' | 'mobile';
 
 export const ALTERNATIVE_QUICK_CAST_QUALITY = 20;
 
 /**
  * Resolves the effective cast mode and gesture accuracy based on the active control scheme.
- * - Quick casts ([Space] or short click without drawing) in BOTH 'classic' and 'alternative'
- *   modes evaluate as 'quick' at 20% spell power (ALTERNATIVE_QUICK_CAST_QUALITY = 20).
+ * - Quick casts ([Space] or short click/tap without drawing) in 'classic', 'alternative',
+ *   and 'mobile' modes evaluate as 'quick' at 20% spell power (ALTERNATIVE_QUICK_CAST_QUALITY = 20).
  * - Leaves 'voice' and 'drawn' / 'voice_and_drawn' untouched.
  */
 export function resolveControlSchemeCastParams(params: {
@@ -8154,3 +8154,55 @@ export function projectRadarPoint(
     inRange: distMeters <= worldRadius,
   };
 }
+
+// Stone Crusher Giant Homing Rolling Boulder constants & helpers
+export const STONE_CRUSHER_BOULDER_COOLDOWN_SEC = 5.0;
+export const STONE_CRUSHER_BOULDER_RADIUS = 1.45;
+export const STONE_CRUSHER_BOULDER_SPEED = 6.8;
+export const STONE_CRUSHER_BOULDER_HP = 90;
+export const STONE_CRUSHER_BOULDER_HIT_RADIUS = 2.2;
+export const STONE_CRUSHER_BOULDER_PLAYER_IMPACT_RADIUS = 2.15;
+export const STONE_CRUSHER_BOULDER_KNOCKBACK_M = 3.0;
+
+export function isInstantBoulderShatterSpell(spellId: SpellId): boolean {
+  return spellId === 'expelliarmus' || spellId === 'stupefy';
+}
+
+// Wild Boar fast movement & snappy strike constants
+export const WILD_BOAR_BASE_SPEED = 6.5;
+export const WILD_BOAR_WINDUP_SEC = 0.24;
+export const WILD_BOAR_CADENCE_SEC = 1.15;
+export const WILD_BOAR_MELEE_RANGE = 4.5;
+
+// Cave Bear anti-chain-fear cooldown & immunity constants & helper
+export const BEAR_FEAR_INITIAL_COOLDOWN_SEC = 3.0;
+export const BEAR_FEAR_COOLDOWN_SEC = 12.0;
+export const BEAR_FEAR_IMMUNITY_POST_SEC = 6.0;
+
+export function canCaveBearUseFearRoar(
+  fearCooldown: number,
+  playerFearTimer: number,
+  playerFearImmunityTimer: number,
+  distToPlayer: number
+): boolean {
+  return (
+    fearCooldown <= 0 &&
+    playerFearTimer <= 0 &&
+    playerFearImmunityTimer <= 0 &&
+    distToPlayer <= BEAR_FEAR_RADIUS
+  );
+}
+
+// Skeleton Hammer & Shield earthquake telegraph & Shield Guard constants & helper
+export const SKELETON_EARTHQUAKE_TELEGRAPH_SEC = 1.0;
+export const SKELETON_EARTHQUAKE_ACTIVE_SEC = 0.75;
+export const SKELETON_SHIELD_ACTIVE_SEC = 3.0;
+export const SKELETON_SHIELD_COOLDOWN_SEC = 9.5;
+
+export function formatEnemyDisplayName(
+  baseName: string,
+  shieldGuardActive?: boolean
+): string {
+  return shieldGuardActive ? `${baseName} [🛡️ ЩИТ]` : baseName;
+}
+

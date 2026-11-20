@@ -610,33 +610,32 @@ export class ArcaneAudioEngine {
     }
 
     if (decoded) {
-      const sliceDur = isKill ? 0.28 : 0.16;
+      const available = Math.max(0.15, decoded.buffer.duration - decoded.trimStartSec);
+      const duration = Math.min(available, isKill ? 0.55 : 0.36);
       const rate = isKill
         ? 0.85 + Math.random() * 0.1
         : 1.05 + Math.random() * 0.17;
-      const peakGain = isKill ? 0.34 : 0.22;
+      const peakGain = isKill ? 0.45 : 0.29;
       const totalDur = decoded.buffer.duration;
       const transientShift = isKill
         ? 0
-        : Math.min(0.03, Math.max(0, totalDur - decoded.trimStartSec - sliceDur * rate) * 0.15);
+        : Math.min(0.03, Math.max(0, totalDur - decoded.trimStartSec - duration * rate) * 0.15);
       const startOffset = Math.min(
         Math.max(0, totalDur - 0.05),
         decoded.trimStartSec + transientShift
       );
-      const maxRealDur = Math.max(0.04, (totalDur - startOffset) / rate);
-      const playDur = Math.min(sliceDur, maxRealDur);
 
       const source = ctx.createBufferSource();
       source.buffer = decoded.buffer;
       source.playbackRate.setValueAtTime(rate, now);
 
       const gain = ctx.createGain();
-      const attack = Math.min(0.012, playDur * 0.15);
-      const fadeStart = Math.max(now + attack, now + playDur * 0.45);
+      const attack = Math.min(0.012, duration * 0.15);
+      const fadeStart = Math.max(now + attack, now + duration - 0.12);
       gain.gain.setValueAtTime(0.0001, now);
       gain.gain.linearRampToValueAtTime(peakGain, now + attack);
       gain.gain.setValueAtTime(peakGain, fadeStart);
-      gain.gain.linearRampToValueAtTime(0, now + playDur);
+      gain.gain.linearRampToValueAtTime(0.0001, now + duration);
 
       source.connect(gain);
       gain.connect(out);
@@ -648,7 +647,8 @@ export class ArcaneAudioEngine {
         }
         gain.disconnect();
       };
-      source.start(now, startOffset, playDur);
+      source.start(now, startOffset);
+      source.stop(now + duration + 0.01);
       return;
     }
 
@@ -968,20 +968,21 @@ export class ArcaneAudioEngine {
 
     const { ctx, out } = audio;
     const now = ctx.currentTime;
-    const duration = 0.26;
+    const available = Math.max(0.15, decoded.buffer.duration - decoded.trimStartSec);
+    const duration = Math.min(available, 0.55);
     const rate = 0.8 + Math.random() * 0.1;
     const distFactor = Math.max(0.15, 1 - distance / 22);
-    const vol = 0.14 * distFactor;
+    const vol = 0.19 * distFactor;
 
     const source = ctx.createBufferSource();
     source.buffer = decoded.buffer;
     source.playbackRate.setValueAtTime(rate, now);
 
     const gain = ctx.createGain();
-    const fadeStart = now + Math.max(0.01, duration - 0.08);
+    const fadeStart = now + Math.max(0.01, duration - 0.12);
     gain.gain.setValueAtTime(vol, now);
     gain.gain.setValueAtTime(vol, fadeStart);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+    gain.gain.linearRampToValueAtTime(0.0001, now + duration);
 
     source.connect(gain);
     gain.connect(out);
@@ -993,8 +994,8 @@ export class ArcaneAudioEngine {
       }
       gain.disconnect();
     };
-    source.start(now, decoded.trimStartSec, duration);
-    source.stop(now + duration);
+    source.start(now, decoded.trimStartSec);
+    source.stop(now + duration + 0.01);
   }
 
   public playPlayerHurt(damage = 12) {
@@ -1014,20 +1015,21 @@ export class ArcaneAudioEngine {
     const decoded =
       this.decodedSpellBuffers['stupefy'] || this.decodedSpellBuffers['teleport'];
     if (decoded) {
-      const duration = 0.22;
+      const available = Math.max(0.15, decoded.buffer.duration - decoded.trimStartSec);
+      const duration = Math.min(available, 0.45);
       const rate = 0.72 + Math.random() * 0.08;
       const safeDamage = Math.max(0, Number.isFinite(damage) ? damage : 12);
-      const vol = Math.min(0.38, 0.24 + (safeDamage / 50) * 0.14);
+      const vol = Math.min(0.5, 0.32 + (safeDamage / 50) * 0.18);
 
       const source = ctx.createBufferSource();
       source.buffer = decoded.buffer;
       source.playbackRate.setValueAtTime(rate, now);
 
       const gain = ctx.createGain();
-      const fadeStart = now + Math.max(0.01, duration - 0.08);
+      const fadeStart = now + Math.max(0.01, duration - 0.12);
       gain.gain.setValueAtTime(vol, now);
       gain.gain.setValueAtTime(vol, fadeStart);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+      gain.gain.linearRampToValueAtTime(0.0001, now + duration);
 
       source.connect(gain);
       gain.connect(out);
@@ -1039,8 +1041,8 @@ export class ArcaneAudioEngine {
         }
         gain.disconnect();
       };
-      source.start(now, decoded.trimStartSec, duration);
-      source.stop(now + duration);
+      source.start(now, decoded.trimStartSec);
+      source.stop(now + duration + 0.01);
       return;
     }
 
@@ -1126,6 +1128,8 @@ export class VoiceSpellRecognizer {
   private isListening = false;
   private callbacks: VoiceRecognitionCallbacks;
   private hasDispatchedThisSession = false;
+  private lastSpellDispatchMs = 0;
+  private lastMatchedResultIdx = -1;
 
   constructor(callbacks: VoiceRecognitionCallbacks) {
     this.callbacks = callbacks;
@@ -1137,7 +1141,7 @@ export class VoiceSpellRecognizer {
     return Boolean(w.SpeechRecognition || w.webkitSpeechRecognition);
   }
 
-  public startPushToTalk() {
+  public startPushToTalk(continuousMode = false) {
     if (typeof window === 'undefined') return;
     const w = window as unknown as Record<string, unknown>;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1149,13 +1153,16 @@ export class VoiceSpellRecognizer {
 
     if (this.isListening) return;
     this.hasDispatchedThisSession = false;
+    this.lastMatchedResultIdx = -1;
+    this.lastSpellDispatchMs = 0;
 
     try {
       const rec = new SpeechRec();
       this.recognition = rec;
       rec.lang = 'ru-RU';
-      // Push-To-Talk: single utterance mode so mic turns off after speaking
-      rec.continuous = false;
+      // Continuous anti-beep mode on Android keeps the mic session open across multiple spells;
+      // single-utterance Push-To-Talk closes automatically after one matched spell.
+      rec.continuous = continuousMode;
       rec.interimResults = true;
       rec.maxAlternatives = 3;
 
@@ -1168,25 +1175,47 @@ export class VoiceSpellRecognizer {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       rec.onresult = (event: any) => {
         if (this.recognition !== rec) return;
-        if (this.hasDispatchedThisSession) return;
+        if (!continuousMode && this.hasDispatchedThisSession) return;
         let latestTranscript = '';
         for (let i = event.resultIndex; i < event.results.length; i++) {
           const result = event.results[i];
           if (!result || !result.length) continue;
           latestTranscript += String(result[0]?.transcript || '') + ' ';
+          if (continuousMode && i <= this.lastMatchedResultIdx) {
+            continue;
+          }
           for (let alt = 0; alt < result.length; alt++) {
             const transcript = String(result[alt]?.transcript || '');
             if (!transcript) continue;
             const matched = matchVoiceSpell(transcript);
             if (matched.spellId) {
-              this.hasDispatchedThisSession = true;
-              this.callbacks.onSpellRecognized(
-                matched.spellId,
-                transcript.trim(),
-                matched.voiceQuality
-              );
-              this.stop();
-              return;
+              if (continuousMode) {
+                const nowMs = performance.now();
+                if (
+                  i <= this.lastMatchedResultIdx ||
+                  (this.lastSpellDispatchMs > 0 && nowMs - this.lastSpellDispatchMs < 650)
+                ) {
+                  break;
+                }
+                this.lastSpellDispatchMs = nowMs;
+                this.lastMatchedResultIdx = i;
+                this.callbacks.onSpellRecognized(
+                  matched.spellId,
+                  transcript.trim(),
+                  matched.voiceQuality
+                );
+                // Keep recognition open in continuousMode so Android Chrome does not beep between spells
+                break;
+              } else {
+                this.hasDispatchedThisSession = true;
+                this.callbacks.onSpellRecognized(
+                  matched.spellId,
+                  transcript.trim(),
+                  matched.voiceQuality
+                );
+                this.stop();
+                return;
+              }
             }
           }
         }
@@ -1213,6 +1242,7 @@ export class VoiceSpellRecognizer {
 
       rec.onend = () => {
         if (this.recognition !== rec) return;
+        // Never auto-restart on silence in continuousMode (avoids endless Android OS beeps)
         this.isListening = false;
         this.callbacks.onStatusChange(false, true);
       };

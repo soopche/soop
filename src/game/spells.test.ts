@@ -158,6 +158,27 @@ import {
   getCampfireEffectiveRegen,
   getDiabloDifficultyMultipliers,
   getUnlockedStageForDifficulty,
+  STONE_CRUSHER_BOULDER_COOLDOWN_SEC,
+  STONE_CRUSHER_BOULDER_RADIUS,
+  STONE_CRUSHER_BOULDER_SPEED,
+  STONE_CRUSHER_BOULDER_HP,
+  STONE_CRUSHER_BOULDER_HIT_RADIUS,
+  STONE_CRUSHER_BOULDER_PLAYER_IMPACT_RADIUS,
+  STONE_CRUSHER_BOULDER_KNOCKBACK_M,
+  isInstantBoulderShatterSpell,
+  WILD_BOAR_BASE_SPEED,
+  WILD_BOAR_WINDUP_SEC,
+  WILD_BOAR_CADENCE_SEC,
+  WILD_BOAR_MELEE_RANGE,
+  BEAR_FEAR_INITIAL_COOLDOWN_SEC,
+  BEAR_FEAR_COOLDOWN_SEC,
+  BEAR_FEAR_IMMUNITY_POST_SEC,
+  canCaveBearUseFearRoar,
+  SKELETON_EARTHQUAKE_TELEGRAPH_SEC,
+  SKELETON_EARTHQUAKE_ACTIVE_SEC,
+  SKELETON_SHIELD_ACTIVE_SEC,
+  SKELETON_SHIELD_COOLDOWN_SEC,
+  formatEnemyDisplayName,
   isCampfireShelteredByWalls,
   unlockDifficultyOnWormBossKill,
   unlockStageForCharacter,
@@ -2041,6 +2062,31 @@ test('Quick cast deals 20% spell power in BOTH classic and alternative schemes, 
   assert.equal(altDrawn.effectiveCastMode, 'drawn');
   assert.equal(altDrawn.effectiveGestureAccuracy, 62);
 
+  // 3b. Mobile control scheme ('mobile') treats quick casts identically (20% power) and leaves voice/drawn untouched
+  const mobileQuick = resolveControlSchemeCastParams({
+    controlScheme: 'mobile',
+    rawCastMode: 'quick',
+    rawGestureAccuracy: 0,
+  });
+  assert.equal(mobileQuick.effectiveCastMode, 'quick');
+  assert.equal(mobileQuick.effectiveGestureAccuracy, 20);
+
+  const mobileVoice = resolveControlSchemeCastParams({
+    controlScheme: 'mobile',
+    rawCastMode: 'voice',
+    rawGestureAccuracy: 0,
+  });
+  assert.equal(mobileVoice.effectiveCastMode, 'voice');
+  assert.equal(mobileVoice.effectiveGestureAccuracy, 0);
+
+  const mobileDrawn = resolveControlSchemeCastParams({
+    controlScheme: 'mobile',
+    rawCastMode: 'drawn',
+    rawGestureAccuracy: 84,
+  });
+  assert.equal(mobileDrawn.effectiveCastMode, 'drawn');
+  assert.equal(mobileDrawn.effectiveGestureAccuracy, 84);
+
   // 4. Inverted mouse wheel cycles spells (deltaY < 0 -> next spell, deltaY > 0 -> previous spell)
   assert.equal(cycleSpellByWheel('incendio', -100), 'glacius');
   assert.equal(cycleSpellByWheel('incendio', 100), 'cooldown_reset');
@@ -2340,6 +2386,68 @@ test('4 Spell Combos (thermal_blast 1.5x+burn, air_strike 1.6x+knockback, pyro_s
   assert.equal(farPt.distMeters, 50);
   assert.equal(farPt.inRange, false);
 });
+
+test('Enemy combat fixes: Stone Crusher boulder, Wild Boar rush, Cave Bear fear immunity, Skeleton earthquake & shield', () => {
+  // 1. Stone Crusher Giant Homing Rolling Boulder
+  assert.equal(STONE_CRUSHER_BOULDER_COOLDOWN_SEC, 5.0);
+  assert.equal(STONE_CRUSHER_BOULDER_RADIUS, 1.45);
+  assert.equal(STONE_CRUSHER_BOULDER_SPEED, 6.8);
+  assert.equal(STONE_CRUSHER_BOULDER_HP, 90);
+  assert.equal(STONE_CRUSHER_BOULDER_HIT_RADIUS, 2.2);
+  assert.equal(STONE_CRUSHER_BOULDER_PLAYER_IMPACT_RADIUS, 2.15);
+  assert.equal(STONE_CRUSHER_BOULDER_KNOCKBACK_M, 3.0);
+  assert.equal(isInstantBoulderShatterSpell('expelliarmus'), true);
+  assert.equal(isInstantBoulderShatterSpell('stupefy'), true);
+  assert.equal(isInstantBoulderShatterSpell('incendio'), false);
+  assert.equal(isInstantBoulderShatterSpell('glacius'), false);
+
+  // 2. Wild Boar snappy movement & non-whiffing melee
+  assert.equal(WILD_BOAR_BASE_SPEED, 6.5);
+  assert.equal(WILD_BOAR_WINDUP_SEC, 0.24);
+  assert.equal(WILD_BOAR_CADENCE_SEC, 1.15);
+  assert.equal(WILD_BOAR_MELEE_RANGE, 4.5);
+
+  // 3. Cave Bear anti-chain-fear cooldown + player post-fear immunity
+  assert.equal(BEAR_FEAR_INITIAL_COOLDOWN_SEC, 3.0);
+  assert.equal(BEAR_FEAR_COOLDOWN_SEC, 12.0);
+  assert.equal(BEAR_FEAR_IMMUNITY_POST_SEC, 6.0);
+  assert.equal(canCaveBearUseFearRoar(0, 0, 0, BEAR_ROAR_RADIUS - 0.5), true);
+  assert.equal(
+    canCaveBearUseFearRoar(2.0, 0, 0, 3.0),
+    false,
+    'Bear cannot roar while its own fearCooldown is active'
+  );
+  assert.equal(
+    canCaveBearUseFearRoar(0, 1.2, 0, 3.0),
+    false,
+    'Second bear cannot chain-fear while player is already feared'
+  );
+  assert.equal(
+    canCaveBearUseFearRoar(0, 0, 4.5, 3.0),
+    false,
+    'Second bear cannot chain-fear during player post-fear immunity window'
+  );
+  assert.equal(
+    canCaveBearUseFearRoar(0, 0, 0, BEAR_ROAR_RADIUS + 1.0),
+    false,
+    'Bear cannot fear player outside roar radius'
+  );
+
+  // 4. Skeleton Hammer & Shield telegraph timing, shield cadence, and [🛡️ ЩИТ] tag
+  assert.equal(SKELETON_EARTHQUAKE_TELEGRAPH_SEC, 1.0);
+  assert.equal(SKELETON_EARTHQUAKE_ACTIVE_SEC, 0.75);
+  assert.equal(SKELETON_SHIELD_ACTIVE_SEC, 3.0);
+  assert.equal(SKELETON_SHIELD_COOLDOWN_SEC, 9.5);
+  assert.equal(
+    formatEnemyDisplayName('Скелет-Молотобоец', true),
+    'Скелет-Молотобоец [🛡️ ЩИТ]'
+  );
+  assert.equal(
+    formatEnemyDisplayName('Скелет-Молотобоец', false),
+    'Скелет-Молотобоец'
+  );
+});
+
 
 
 
