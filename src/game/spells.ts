@@ -1375,19 +1375,28 @@ export const SPELLS: Record<SpellId, SpellDef> = {
   },
   wingardium: {
     id: 'wingardium',
-    name: 'Вингардиум Левиоса',
-    shortWord: 'Левиоса',
+    name: 'Лети (Телекинез)',
+    shortWord: 'Лети',
     latinName: 'Wingardium Leviosa',
     roleClue: 'Телекинез · Щит и Бросок · 15 МП · КД 5с→4с',
     description:
       'Захватывает физический объект в качестве летающего щита перед вами или швыряет его во врага как снаряд. Стоит 15 маны.',
     voiceTriggers: [
+      'лети',
+      'летит',
+      'летать',
+      'летим',
+      'летите',
+      'летя',
+      'лити',
+      'полет',
+      'полёт',
+      'взлет',
+      'взлёт',
       'левиоса',
       'тяни',
       'щит',
       'верх',
-      'полет',
-      'вингардиум левиоса',
       'вингардиум',
       'wingardium',
       'leviosa',
@@ -1445,9 +1454,9 @@ export const SPELLS: Record<SpellId, SpellDef> = {
     name: 'Остолбеней',
     shortWord: 'Стоп',
     latinName: 'Stupefy',
-    roleClue: 'Оглушение · Кирпич (▬) · Урон 4..20 (голос 5) · КД 5с→4с',
+    roleClue: 'Оглушение · Кирпич (▬) · Урон 4..20 (голос 12) · КД 5с→4с',
     description:
-      'Концентрированная сфера энергии, парализующая врагов и прерывающая их замах (рисунок горизонтального прямоугольника «Кирпич», базовый урон 4..20 от рисунка, 5 от голоса). С 4-го уровня выпускает 2 снаряда!',
+      'Концентрированная сфера энергии, парализующая врагов и прерывающая их замах (рисунок горизонтального прямоугольника «Кирпич», базовый урон 4..20 от рисунка, 12 от голоса). С 4-го уровня выпускает 2 снаряда!',
     voiceTriggers: ['стоп', 'сон', 'цепь', 'замри', 'кирпич', 'остолбеней', 'ступефай', 'stupefy'],
     gestureId: 'rect_brick',
     gestureName: 'Кирпич (▬)',
@@ -1569,7 +1578,7 @@ export const SPELLS: Record<SpellId, SpellDef> = {
     latinName: 'Gladius Arcanus',
     roleClue: 'Магический Меч [8] · Удары ПКМ влево/вправо (раз в 1с, на 6 ур. 2 меча раз в 0.7с) · КД 60с',
     description:
-      'Призывает большой Магический Меч для ударов на средней дистанции движением ПКМ вправо или влево. Упрощённый жест в одну линию: верхний клинок и ручка без гарды. Длительность: 3с [Пробел], 10с [Голос], 7–20с [Рисунок]. Урон: 10 [Пробел], 25 [Голос], 20–40 [Рисунок]. На 4 ур. поджигает, на 6 ур. появляется второй меч в левую руку (вправо — бьёт правая рука, влево — левая рука, урон раз в 0.7 сек). Перезарядка 60 сек.',
+      'Призывает большой Магический Меч для ударов на средней дистанции движением ПКМ вправо или влево. Упрощённый жест в одну линию: верхний клинок и ручка без гарды. Длительность: 3с [Пробел], 10с [Голос], 7–20с [Рисунок]. Урон: 10 [Пробел], 29 [Голос], 20–40 [Рисунок]. На 4 ур. поджигает, на 6 ур. появляется второй меч в левую руку (вправо — бьёт правая рука, влево — левая рука, урон раз в 0.7 сек). Перезарядка 60 сек.',
     voiceTriggers: [
       'меч',
       'мечь',
@@ -1606,7 +1615,7 @@ export const SPELLS: Record<SpellId, SpellDef> = {
     latinName: 'Appareo',
     roleClue: 'Скачок на пол + Взрыв · КД 10с (от рисунка быстрее) · [Ё]',
     description:
-      'Мгновенно переносит вас в видимую точку на полу (не работает сквозь стены и за пределы зала) и наносит взрывной урон в радиусе 6м! Качество рисунка Круга и прокачка увеличивают урон, дальность и сокращают перезарядку (голос дает 14 урона и среднюю перезарядку).',
+      'Мгновенно переносит вас в видимую точку на полу (не работает сквозь стены и за пределы зала) и наносит взрывной урон в радиусе 6м! Качество рисунка Круга и прокачка увеличивают урон, дальность и сокращают перезарядку (голос дает 18 урона и среднюю перезарядку).',
     voiceTriggers: ['прыжок', 'телепорт', 'блинк', 'скачок', 'шаг', 'круг', 'teleport', 'blink'],
     gestureId: 'circle',
     gestureName: 'Круг (◯)',
@@ -2011,8 +2020,8 @@ export const INITIAL_QUESTS: QuestDef[] = [
   {
     id: 'quest_telekinesis_4',
     category: 'exploration',
-    title: 'Мастер Телекинеза (Вингардиум)',
-    description: 'Захватите или метните физические объекты заклинанием «Тяни» [5] 7 раз.',
+    title: 'Мастер Телекинеза (Лети)',
+    description: 'Захватите или метните физические объекты заклинанием «Лети» [5] 7 раз.',
     eventType: 'cast_wingardium',
     targetCount: 7,
     currentCount: 0,
@@ -2070,7 +2079,7 @@ export const INITIAL_QUESTS: QuestDef[] = [
     id: 'quest_barrel_explosions_6',
     category: 'combat',
     title: 'Пиротехник Телекинеза (Красные Бочки)',
-    description: 'Подорвите 6 врагов броском красной взрывной бочки с помощью заклинания «Тяни» [5].',
+    description: 'Подорвите 6 врагов броском красной взрывной бочки с помощью заклинания «Лети» [5].',
     eventType: 'barrel_explode_hit',
     targetCount: 6,
     currentCount: 0,
@@ -2702,7 +2711,7 @@ export function matchVoiceSpell(transcript: string): {
 
   const fuzzyMap: Array<{ pattern: RegExp; id: SpellId; quality: number }> = [
     { pattern: /(?:^|\s)(?:огон|жар|пыл|инсен|incen|огн|фаер)/i, id: 'incendio', quality: 95 },
-    { pattern: /(?:^|\s)(?:тян|щит|верх|вингар|левиос|wingar|levio)/i, id: 'wingardium', quality: 95 },
+    { pattern: /(?:^|\s)(?:лет|лит|взлет|полет|тян|щит|верх|вингар|левиос|wingar|levio)/i, id: 'wingardium', quality: 95 },
     { pattern: /(?:^|\s)(?:удар|луч|сбей|экспел|expel|обезор)/i, id: 'expelliarmus', quality: 95 },
     { pattern: /(?:^|\s)(?:стоп|сон|цеп|замр|остолб|ступеф|stupe)/i, id: 'stupefy', quality: 95 },
     { pattern: /(?:^|\s)(?:хил|леч|сердц|жизн|эписк|episk|heal)/i, id: 'vera_verto', quality: 95 },
@@ -2941,7 +2950,7 @@ export function calculateArcaneSwordStats(
     rawSlashDamage = Math.round(20 + drawnRatio * 20); // 20 .. 40
   } else if (params.modeUsed === 'voice') {
     baseDurationSec = 10.0;
-    rawSlashDamage = 25;
+    rawSlashDamage = 29;
   } else {
     baseDurationSec = 3.0;
     rawSlashDamage = 10;
@@ -3025,7 +3034,7 @@ export function evaluateArcaneSwordSpellControl(
           blockCast: true,
           allowCast: false,
           canCast: false,
-          reason: '⚔️ С Магическим Мечом в руках нельзя использовать Левиосу голосом!',
+          reason: '⚔️ С Магическим Мечом в руках нельзя использовать «Лети» голосом!',
         };
       }
       return {
@@ -3060,7 +3069,7 @@ export function evaluateArcaneSwordSpellControl(
         blockCast: true,
         allowCast: false,
         canCast: false,
-        reason: '⚔️ С Магическим Мечом в руках нельзя использовать Левиосу голосом!',
+        reason: '⚔️ С Магическим Мечом в руках нельзя использовать «Лети» голосом!',
       };
     }
     return {
@@ -3156,8 +3165,8 @@ export function calculateSpellCastStats(params: {
 
   const drawnDmgMin = isStupefy || isGlacius ? 4 : 6;
   const drawnDmgSpan = isStupefy ? 16 : isGlacius ? 22 : 24;
-  // Updated Voice Base Damage: Stupefy (Стоп) = 8, Glacius (Мороз) = 10, Incendio/Expelliarmus/Teleport (Огонь/Удар/Прыжок) = 14
-  const voiceBaseDmg = isStupefy ? 8 : isGlacius ? 10 : 14;
+  // Updated Voice Base Damage (+4 across all offensive spells): Stupefy (Стоп) = 12, Glacius (Мороз) = 14, Incendio/Expelliarmus/Wingardium/Teleport = 18
+  const voiceBaseDmg = isStupefy ? 12 : isGlacius ? 14 : 18;
 
   if (hasDrawn && hasVoice) {
     modeUsed = 'voice_and_drawn';
@@ -3411,7 +3420,7 @@ export function getStage0StepSpec(stepIndex: number): Stage0StepSpec | null {
       : stepIndex === 8
       ? '🔥❄️ Уровень 0 · Этап 3/4 (Комбо 1/4 «Термовзрыв»): Заморозь врага [2] Мороз (на 3с) и сразу ударь [1] Огонь!'
       : stepIndex === 9
-      ? '🪶⚡ Комбо 2/4 «Воздушный Удар»: Подними врага в воздух [5] Левиоса и мощно оттолкни лучом [3] Удар!'
+      ? '🪶⚡ Комбо 2/4 «Воздушный Удар»: Подними врага в воздух [5] Лети и мощно оттолкни лучом [3] Удар!'
       : stepIndex === 10
       ? '🧱🔥 Комбо 3/4 «Пиро-Шок»: Оглуши врага [4] Стоп и взорви заклинанием [1] Огонь!'
       : stepIndex === 11
@@ -7950,7 +7959,7 @@ export const SPELL_COMBOS: readonly SpellComboDef[] = [
     knockbackMultiplier: 2.4,
     badgeColor: '#38bdf8',
     shortEffect: '×1.6 урон + мощный отброс',
-    description: 'Подними врага в воздух [5] Левиоса (3с) и ударь лучом [3] Удар (или Мечом) — ×1.6 урона и полёт далеко назад!',
+    description: 'Подними врага в воздух [5] Лети (3с) и ударь лучом [3] Удар (или Мечом) — ×1.6 урона и полёт далеко назад!',
   },
   {
     id: 'pyro_shock',

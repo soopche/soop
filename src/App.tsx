@@ -331,7 +331,7 @@ const SpellDockGrid = memo(
         <div
           data-testid="spell-dock-grid"
           onPointerDown={(e) => e.stopPropagation()}
-          className="w-[calc(100vw-16px)] sm:w-[calc(100vw-206px)] max-w-[660px] grid grid-cols-9 gap-0.5 sm:gap-1 p-1 rounded-xl border border-[#3b3154] shadow-2xl touch-none"
+          className="w-full max-w-none grid grid-cols-9 gap-0.5 sm:gap-1 p-1 rounded-xl border border-[#3b3154] shadow-2xl touch-none"
           style={{ backgroundColor: 'rgba(14, 12, 22, 0.9)' }}
         >
           {MOBILE_BOTTOM_SPELLS.map(renderSpellButton)}
@@ -1288,7 +1288,7 @@ export default function App() {
       if (!world) return;
 
       // Enforce Arcane Sword spell control rules:
-      // - Only VOICE [R] can cast spells while keeping the Arcane Sword active, except Wingardium ("любые кроме левиоса").
+      // - Only VOICE [R] can cast spells while keeping the Arcane Sword active, except Wingardium («Лети»).
       // - Drawing or quick-casting another spell dismisses the Arcane Sword immediately!
       if (world.hasActiveArcaneSword() && opts.spellId !== 'arcane_sword') {
         const swordCtrl = evaluateArcaneSwordSpellControl(
@@ -1313,6 +1313,11 @@ export default function App() {
 
       if (!isUnlocked) {
         showToast(`Требуется Ур. ${spell.unlockLevel}`);
+        return;
+      }
+
+      if (opts.spellId === 'campfire_teleport' && world.campfires.length === 0) {
+        showToast('🔥 Поставьте костёр, чтобы вернуться домой!');
         return;
       }
 
@@ -2816,7 +2821,7 @@ export default function App() {
     const cy = rect.top + rect.height / 2;
     const dx = clientX - cx;
     const dy = clientY - cy;
-    const maxRadius = 36;
+    const maxRadius = 50;
     const dist = Math.hypot(dx, dy);
     const scale = dist > maxRadius && dist > 0 ? maxRadius / dist : 1;
     const clampedX = dx * scale;
@@ -4712,7 +4717,7 @@ export default function App() {
               data-testid="hud-status-banners"
               className={
                 controlScheme === 'mobile'
-                  ? 'fixed left-1/2 bottom-[174px] sm:bottom-[84px] -translate-x-1/2 z-30 max-w-[85vw] flex flex-col items-center pointer-events-none'
+                  ? 'fixed left-1/2 bottom-[224px] sm:bottom-[84px] -translate-x-1/2 z-30 max-w-[90vw] sm:max-w-[calc(100vw-316px)] flex flex-col items-center pointer-events-none'
                   : 'fixed left-1/2 top-[calc(50%+114px)] -translate-x-1/2 flex flex-col items-center pointer-events-none'
               }
             >
@@ -5111,8 +5116,8 @@ export default function App() {
                   onPointerCancel={handleWandDrawPointerUp}
                   className={`fixed left-[61%] top-[44%] -translate-x-1/2 -translate-y-1/2 z-[25] w-11 h-11 rounded-full border-2 flex items-center justify-center text-lg pointer-events-auto touch-none select-none cursor-pointer transition-all ${
                     isTracingRune
-                      ? 'bg-[#422006]/85 border-[#fde047] text-[#fde047] scale-110 shadow-[0_0_22px_rgba(250,204,21,0.85)]'
-                      : 'bg-[#14111f]/45 border-[#fde047]/65 text-[#fde68a] shadow-[0_0_14px_rgba(250,204,21,0.35)] backdrop-blur-[2px]'
+                      ? 'bg-[#422006]/85 border-[#fde047] text-[#fde047] scale-110 shadow-[0_0_22px_rgba(250,204,21,0.85)] opacity-90'
+                      : 'bg-[#09080d]/25 border-white/25 text-white/75 opacity-40 backdrop-blur-[2px]'
                   }`}
                 >
                   ✍️
@@ -5132,14 +5137,14 @@ export default function App() {
                 }}
                 className={`fixed left-[72%] bottom-[26%] -translate-x-1/2 z-[25] w-11 h-11 rounded-full border-2 active:scale-95 text-lg flex items-center justify-center pointer-events-auto touch-none select-none transition-all cursor-pointer ${
                   micListening
-                    ? 'bg-[#dc2626]/90 border-[#f87171] text-white shadow-[0_0_18px_rgba(239,68,68,0.8)] animate-pulse'
-                    : 'bg-[#14111f]/55 border-[#c4b5fd]/60 text-[#e2d9f3] shadow-lg backdrop-blur-[2px]'
+                    ? 'bg-[#dc2626]/90 border-[#f87171] text-white shadow-[0_0_18px_rgba(239,68,68,0.8)] animate-pulse opacity-90'
+                    : 'bg-[#09080d]/25 border-white/25 text-white/75 opacity-40 backdrop-blur-[2px]'
                 }`}
               >
                 🎤
               </button>
 
-              {/* Bottom-Left Virtual Joystick (compact 100x100px base + 40x40px thumb knob) */}
+              {/* Virtual Joystick placed higher above the bottom spell bar (136x136px base + 54x54px thumb knob) */}
               <div
                 ref={joyBaseRef}
                 data-testid="mobile-virtual-joystick"
@@ -5147,15 +5152,15 @@ export default function App() {
                 onPointerMove={handleJoystickPointerMove}
                 onPointerUp={handleJoystickPointerUp}
                 onPointerCancel={handleJoystickPointerUp}
-                className="fixed bottom-2 left-2 z-20 w-[100px] h-[100px] rounded-full border-2 border-[#38bdf8]/45 bg-[#0e0c16]/55 backdrop-blur-sm flex items-center justify-center pointer-events-auto touch-none select-none shadow-[0_0_24px_rgba(0,0,0,0.45)]"
+                className="fixed bottom-[78px] left-3 z-20 w-[136px] h-[136px] rounded-full border-2 border-[#38bdf8]/45 bg-[#0e0c16]/55 backdrop-blur-sm flex items-center justify-center pointer-events-auto touch-none select-none shadow-[0_0_24px_rgba(0,0,0,0.45)]"
               >
-                <div className="absolute top-1.5 w-1.5 h-1.5 rounded-full bg-[#38bdf8]/45 pointer-events-none" />
-                <div className="absolute bottom-1.5 w-1.5 h-1.5 rounded-full bg-[#38bdf8]/45 pointer-events-none" />
-                <div className="absolute left-1.5 w-1.5 h-1.5 rounded-full bg-[#38bdf8]/45 pointer-events-none" />
-                <div className="absolute right-1.5 w-1.5 h-1.5 rounded-full bg-[#38bdf8]/45 pointer-events-none" />
+                <div className="absolute top-2 w-1.5 h-1.5 rounded-full bg-[#38bdf8]/45 pointer-events-none" />
+                <div className="absolute bottom-2 w-1.5 h-1.5 rounded-full bg-[#38bdf8]/45 pointer-events-none" />
+                <div className="absolute left-2 w-1.5 h-1.5 rounded-full bg-[#38bdf8]/45 pointer-events-none" />
+                <div className="absolute right-2 w-1.5 h-1.5 rounded-full bg-[#38bdf8]/45 pointer-events-none" />
                 <div
                   data-testid="mobile-joystick-knob"
-                  className="w-[40px] h-[40px] rounded-full bg-gradient-to-br from-[#38bdf8]/90 to-[#1d4ed8]/90 border-2 border-[#bae6fd] shadow-[0_0_16px_rgba(56,189,248,0.6)] pointer-events-none"
+                  className="w-[54px] h-[54px] rounded-full bg-gradient-to-br from-[#38bdf8]/90 to-[#1d4ed8]/90 border-2 border-[#bae6fd] shadow-[0_0_16px_rgba(56,189,248,0.6)] pointer-events-none"
                   style={{
                     transform: `translate(${joyKnobOffset.x}px, ${joyKnobOffset.y}px)`,
                   }}
@@ -5262,12 +5267,12 @@ export default function App() {
           )}
 
           <div
-            className={`fixed left-1/2 -translate-x-1/2 flex flex-col items-center gap-1.5 pointer-events-auto ${
+            className={`fixed flex flex-col items-center gap-1.5 pointer-events-auto ${
               controlScheme === 'mobile'
-                ? 'bottom-[118px] sm:bottom-2 sm:left-[calc(50%+12px)] w-auto px-0'
+                ? 'left-2 right-[88px] bottom-2 max-w-none px-0'
                 : isNarrowViewport
-                  ? 'bottom-3 w-auto max-w-[94vw] px-1'
-                  : 'bottom-3 w-full max-w-[890px] px-4'
+                  ? 'left-1/2 -translate-x-1/2 bottom-3 w-auto max-w-[94vw] px-1'
+                  : 'left-1/2 -translate-x-1/2 bottom-3 w-full max-w-[890px] px-4'
             }`}
           >
             {/* [H] Visibility Hint Badge (PC mode full controls; mobile uses dedicated top-left 👁️ button) */}

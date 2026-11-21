@@ -1657,7 +1657,7 @@ export const GrimoireModal: React.FC<GrimoireModalProps> = ({
                       <div className="p-3 rounded-lg bg-[#12101b] border border-[#2a233d]">
                         <div className="text-[10px] text-[#38bdf8]">ГОЛОС [R]</div>
                         <div className="text-base font-bold text-[#38bdf8] mt-0.5">
-                          {Math.round(14 * activeSpellMult)} ур. · {(activeSpellCooldown * 0.82).toFixed(1)}с
+                          {Math.round(18 * activeSpellMult)} ур. · {(activeSpellCooldown * 0.82).toFixed(1)}с
                         </div>
                       </div>
                       <div className="p-3 rounded-lg bg-[#12101b] border border-[#22c55e]">
@@ -1683,7 +1683,7 @@ export const GrimoireModal: React.FC<GrimoireModalProps> = ({
                       <div className="p-3 rounded-lg bg-[#12101b] border border-[#2a233d]">
                         <div className="text-[10px] text-[#38bdf8]">ГОЛОС [R]</div>
                         <div className="text-base font-bold text-[#38bdf8] mt-0.5">
-                          {Math.round(10 * activeSpellMult)} ур.
+                          {Math.round(14 * activeSpellMult)} ур.
                         </div>
                       </div>
                       <div className="p-3 rounded-lg bg-[#12101b] border border-[#22c55e]">
@@ -1708,7 +1708,7 @@ export const GrimoireModal: React.FC<GrimoireModalProps> = ({
                     <div className="p-3 rounded-lg bg-[#12101b] border border-[#2a233d]">
                       <div className="text-[10px] text-[#38bdf8]">ГОЛОС [R]</div>
                       <div className="text-base font-bold text-[#38bdf8] mt-0.5">
-                        {Math.round(8 * activeSpellMult)} ур.
+                        {Math.round(12 * activeSpellMult)} ур.
                       </div>
                     </div>
                     <div className="p-3 rounded-lg bg-[#12101b] border border-[#22c55e]">
@@ -1729,7 +1729,7 @@ export const GrimoireModal: React.FC<GrimoireModalProps> = ({
                     <div className="p-3 rounded-lg bg-[#12101b] border border-[#2a233d]">
                       <div className="text-[10px] text-[#38bdf8]">ГОЛОС [R]</div>
                       <div className="text-base font-bold text-[#38bdf8] mt-0.5">
-                        {Math.round(14 * activeSpellMult)} ур.
+                        {Math.round(18 * activeSpellMult)} ур.
                       </div>
                     </div>
                     <div className="p-3 rounded-lg bg-[#12101b] border border-[#22c55e]">

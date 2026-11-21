@@ -10971,19 +10971,28 @@ export class ArcaneWorldEngine {
   public tryHarvestOrInteract(): boolean {
     if (this.mode !== 'playing') return false;
 
-    // 0. Two-Step Treasure Chest Interaction:
-    // - 1st press [E]: Opens lid & shows Chest Contents Preview window
-    // - 2nd press [E]: Collects the items into player's inventory!
-    for (const chest of this.chests) {
-      if (chest.opened && !chest.looted && chest.position.distanceTo(this.playerPos) <= 4.5) {
-        this.lootTreasureChest(chest, false);
-        return true;
+    // 0. Treasure Chest Interaction:
+    // - Mobile: 1-tap instant open & loot within 4.8m (no 2-step preview modal)
+    // - PC (classic/alternative): 1st press [E] opens lid & shows preview, 2nd press [E] collects into inventory
+    if (this.controlScheme === 'mobile') {
+      for (const chest of this.chests) {
+        if (!chest.looted && chest.position.distanceTo(this.playerPos) <= 4.8) {
+          this.lootTreasureChest(chest, false);
+          return true;
+        }
       }
-    }
-    for (const chest of this.chests) {
-      if (!chest.opened && chest.position.distanceTo(this.playerPos) <= 4.2) {
-        this.openTreasureChest(chest, false);
-        return true;
+    } else {
+      for (const chest of this.chests) {
+        if (chest.opened && !chest.looted && chest.position.distanceTo(this.playerPos) <= 4.5) {
+          this.lootTreasureChest(chest, false);
+          return true;
+        }
+      }
+      for (const chest of this.chests) {
+        if (!chest.opened && chest.position.distanceTo(this.playerPos) <= 4.2) {
+          this.openTreasureChest(chest, false);
+          return true;
+        }
       }
     }
 
@@ -15214,11 +15223,17 @@ export class ArcaneWorldEngine {
       }
     }
     for (const chest of this.chests) {
-      if (chest.opened && !chest.looted && chest.position.distanceTo(this.playerPos) <= 4.5) {
-        return `[E] Взять добычу: ${chest.spec.label}`;
-      }
-      if (!chest.opened && chest.position.distanceTo(this.playerPos) <= 4.2) {
-        return `[E] Открыть и осмотреть: ${chest.spec.label}`;
+      if (this.controlScheme === 'mobile') {
+        if (!chest.looted && chest.position.distanceTo(this.playerPos) <= 4.8) {
+          return `[E] Взять сундук: ${chest.spec.label}`;
+        }
+      } else {
+        if (chest.opened && !chest.looted && chest.position.distanceTo(this.playerPos) <= 4.5) {
+          return `[E] Взять добычу: ${chest.spec.label}`;
+        }
+        if (!chest.opened && chest.position.distanceTo(this.playerPos) <= 4.2) {
+          return `[E] Открыть и осмотреть: ${chest.spec.label}`;
+        }
       }
     }
     for (const animal of this.animals) {

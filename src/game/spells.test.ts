@@ -211,7 +211,8 @@ test('SPELL_ORDER includes [1..8], [Ё] Teleport, [F] Домой, and [G] Пер
   assert.equal(SPELL_ORDER[9], 'campfire_teleport');
   assert.equal(SPELL_ORDER[10], 'cooldown_reset');
   assert.equal(SPELLS.glacius.shortWord, 'Мороз');
-  assert.equal(SPELLS.wingardium.shortWord, 'Левиоса');
+  assert.equal(SPELLS.wingardium.shortWord, 'Лети');
+  assert.equal(SPELLS.wingardium.name, 'Лети (Телекинез)');
   assert.equal(SPELLS.vera_verto.shortWord, 'Лечение');
   assert.equal(SPELLS.campfire_teleport.name, 'Домой');
   assert.equal(SPELLS.campfire_teleport.shortWord, 'Домой');
@@ -232,8 +233,13 @@ test('SPELL_ORDER includes [1..8], [Ё] Teleport, [F] Домой, and [G] Пер
   assert.equal(getSpellHotkeyLabel('cooldown_reset'), 'G');
 });
 
-test('matchVoiceSpell recognizes short Russian words including Мороз, Левиоса, Лечение, Рост, Прыжок/Телепорт, Домой, and Перезарядка (while Костёр is strictly physical campfire)', () => {
+test('matchVoiceSpell recognizes short Russian words including Мороз, Лети/Левиоса, Лечение, Рост, Прыжок/Телепорт, Домой, and Перезарядка (while Костёр is strictly physical campfire)', () => {
   assert.equal(matchVoiceSpell('огонь').spellId, 'incendio');
+  assert.equal(matchVoiceSpell('лети').spellId, 'wingardium');
+  assert.equal(matchVoiceSpell('летать').spellId, 'wingardium');
+  assert.equal(matchVoiceSpell('полёт').spellId, 'wingardium');
+  assert.equal(matchVoiceSpell('лити').spellId, 'wingardium');
+  assert.equal(matchVoiceSpell('взлёт').spellId, 'wingardium');
   assert.equal(matchVoiceSpell('левиоса').spellId, 'wingardium');
   assert.equal(matchVoiceSpell('тяни').spellId, 'wingardium');
   assert.equal(matchVoiceSpell('удар').spellId, 'expelliarmus');
@@ -361,10 +367,10 @@ test('calculateSpellCastStats enforces 5.0s->4.0s cooldowns, Teleport 10s CD/ran
     spellLevel: 1,
     staffId: 'wand_ollivander',
   });
-  assert.equal(lv1FireVoice.rawBaseDamage, 14);
-  assert.equal(lv1FireVoice.finalDamage, 14);
-  assert.equal(lv1StrikeVoice.rawBaseDamage, 14);
-  assert.equal(lv1StrikeVoice.finalDamage, 14);
+  assert.equal(lv1FireVoice.rawBaseDamage, 18);
+  assert.equal(lv1FireVoice.finalDamage, 18);
+  assert.equal(lv1StrikeVoice.rawBaseDamage, 18);
+  assert.equal(lv1StrikeVoice.finalDamage, 18);
 
   const lv4CombatCast = calculateSpellCastStats({
     spellId: 'incendio',
@@ -375,7 +381,7 @@ test('calculateSpellCastStats enforces 5.0s->4.0s cooldowns, Teleport 10s CD/ran
     spellLevel: 4,
     staffId: 'wand_ollivander',
   });
-  assert.equal(lv4CombatCast.finalDamage, 22);
+  assert.equal(lv4CombatCast.finalDamage, Math.round(18 * 1.6));
   assert.equal(lv4CombatCast.cooldownSec, 4.25);
   assert.equal(lv4CombatCast.projectileCount, 2);
 
@@ -423,7 +429,7 @@ test('calculateSpellCastStats enforces 5.0s->4.0s cooldowns, Teleport 10s CD/ran
   });
   assert.equal(tpQuick.cooldownSec, 10.0);
   assert.equal(tpQuick.finalDamage, 6);
-  assert.equal(tpVoice.finalDamage, 14);
+  assert.equal(tpVoice.finalDamage, 18);
   assert.ok(tpVoice.cooldownSec < tpQuick.cooldownSec && tpVoice.cooldownSec > tpPerfectDraw.cooldownSec);
   assert.equal(tpPerfectDraw.finalDamage, 30);
   assert.ok(tpPerfectDraw.cooldownSec <= 6.5);
@@ -459,8 +465,8 @@ test('calculateSpellCastStats enforces 5.0s->4.0s cooldowns, Teleport 10s CD/ran
     spellLevel: 1,
     staffId: 'wand_ollivander',
   });
-  assert.equal(stupefyVoice.rawBaseDamage, 8);
-  assert.equal(stupefyVoice.finalDamage, 8);
+  assert.equal(stupefyVoice.rawBaseDamage, 12);
+  assert.equal(stupefyVoice.finalDamage, 12);
   assert.equal(stupefyPoorDraw.rawBaseDamage, 4);
   assert.equal(stupefyPerfectDraw.rawBaseDamage, 20);
 
@@ -495,8 +501,8 @@ test('calculateSpellCastStats enforces 5.0s->4.0s cooldowns, Teleport 10s CD/ran
     spellLevel: 1,
     staffId: 'wand_ollivander',
   });
-  assert.equal(glaciusVoice.rawBaseDamage, 10);
-  assert.equal(glaciusVoice.finalDamage, 10);
+  assert.equal(glaciusVoice.rawBaseDamage, 14);
+  assert.equal(glaciusVoice.finalDamage, 14);
   assert.equal(glaciusPoorDraw.rawBaseDamage, 4);
   assert.equal(glaciusPerfectDraw.rawBaseDamage, 26);
 
@@ -1552,7 +1558,7 @@ test('Stage 5 Splitting Worm Boss (1 -> 2 -> 4 at <=30% HP), 4 New Stage 5 Mob A
   assert.equal(swQuick.durationSec, 3.0);
   assert.equal(swQuick.damage, 10);
   assert.equal(swVoice.durationSec, 10.0);
-  assert.equal(swVoice.damage, 25);
+  assert.equal(swVoice.damage, 29);
   assert.equal(swDrawnMin.durationSec, 7.0);
   assert.equal(swDrawnMin.damage, 20);
   assert.equal(swDrawnMax.durationSec, 20.0);
